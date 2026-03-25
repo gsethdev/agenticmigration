@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "iis-migration": {
+      "command": "python",
+      "args": ["${workspaceFolder}/server.py"]
+    },
+    "app-modernization": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@microsoft/github-copilot-app-modernization-mcp-server"]
+    }
+  }
+}

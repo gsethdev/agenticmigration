@@ -1,0 +1,459 @@
+<#
+  .SYNOPSIS
+  Builds a JSON file containing migration settings
+
+  .DESCRIPTION
+  Generates default values for settings required for sites migration based on parameters passed for use with Invoke-SiteMigration
+
+  For applications requiring Managed Instance on Azure App Service (complex dependencies, Windows Services, etc.):
+  1. Create the Managed Instance App Service Plan separately using Azure Portal or CLI
+  2. Modify MigrationSettings.json to reference your existing Managed Instance ASP
+  For more information: https://aka.ms/managedinstanceonappservicedocs
+
+  .PARAMETER SitePackageResultsPath
+  Specifies the path to a file containing sites packaging details
+  Settings are generated for all sites in this SitePackageResultsPath that specify a package path 
+  
+  .PARAMETER Region
+  Specifies a region to be used for all sites migration   
+
+  .PARAMETER SubscriptionId
+  Specifies an Azure subscription to use for all sites migration
+
+  .PARAMETER ResourceGroup
+  Specifies a Resource Group to use for all sites migration
+
+  .PARAMETER AppServiceEnvironment
+  Specifies App Service Environment to use for all sites migration
+
+  .PARAMETER MigrationSettingsFilePath
+  Specifies the path where the migration settings file will be saved
+
+  .PARAMETER Force
+  Overwrites the migrations settings file if already exists
+
+  .OUTPUTS
+  Generate-MigrationSettings.ps1 outputs the path to a file containing Default settings for migration
+
+  .EXAMPLE
+  C:\PS> .\Generate-MigrationSettings -SitePackageResultsPath PackageResults.json -Region "West US" -SubscriptionId "01234567-3333-4444-5555-111111111111" -ResourceGroup "MyResourceGroup"  
+
+  .EXAMPLE
+  C:\PS> .\Generate-MigrationSettings -SitePackageResultsPath PackageResults.json -Region "West US" -SubscriptionId "01234567-3333-4444-5555-111111111111" -ResourceGroup "MyResourceGroup" -AppServiceEnvironment "MyASE" -MigrationSettingsFilePath "C:\Migration\MyMigrationSettings.json"
+#>
+
+#Requires -Version 5.1
+param(
+    [Parameter(Mandatory)]
+    [string]$SitePackageResultsPath,
+
+    [Parameter(Mandatory)]
+    [string]$Region,
+
+    [Parameter(Mandatory)]
+    [string]$SubscriptionId,
+
+    [Parameter(Mandatory)]
+    [string]$ResourceGroup,
+
+    [Parameter()]
+    [string]$AppServiceEnvironment,
+
+    [Parameter()]
+    [string]$MigrationSettingsFilePath,
+
+    [Parameter()]
+    [switch]$Force
+)
+Import-Module (Join-Path $PSScriptRoot "MigrationHelperFunctions.psm1")
+
+$ScriptConfig = Get-ScriptConfig
+$MigrationSettings = New-Object System.Collections.ArrayList
+
+Send-TelemetryEventIfEnabled -TelemetryTitle "Generate-MigrationSettings.ps1" -EventName "Started script" -EventType "action" -ErrorAction SilentlyContinue
+
+if  (!$MigrationSettingsFilePath) {
+    $MigrationSettingsFilePath = $ScriptConfig.DefaultMigrationSettingsFilePath
+}
+
+if (Test-Path $MigrationSettingsFilePath) {
+    if($Force) {
+        Write-HostInfo -Message "Existing $MigrationSettingsFilePath file will be overwritten"
+    } else {
+        Write-HostError -Message  "$MigrationSettingsFilePath already exists. Use -Force to overwrite or specify alternate location with MigrationSettingsFilePath parameter"
+        exit 1
+    }
+} 
+
+Initialize-LoginToAzure
+
+#validations on azure parameters before adding them as part of settings file
+try {
+    Test-AzureResources -SubscriptionId $SubscriptionId -Region $Region -AppServiceEnvironment $AppServiceEnvironment -ResourceGroup $ResourceGroup 
+} catch {
+    #non termination error as validations are carried in migration (Invoke-SiteMigration.ps1) step too
+    Write-HostError "Error in validating Azure parameters: $($_.Exception.Message)"
+}
+
+function Get-IfP1V3Available {
+    try {
+        $AccessToken = Get-AzureAccessToken
+        $Headers = @{
+            'Content-Type' = 'application/json'
+            'Authorization' = "Bearer $AccessToken"
+        }
+        $RegionsForSkuURI = "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.Web/geoRegions?api-version=2020-10-01&sku=PremiumV3"
+        $RegionsForP1V3 = Invoke-RestMethod -Uri $RegionsForSkuURI -Method "GET" -Headers $Headers
+        $RegionsData = $RegionsForP1V3.value
+        foreach ($SkuRegion in $RegionsData) {
+            $RegionName = $SkuRegion.name -replace '\s',''
+            if ($RegionName -eq $Region) {
+                return $true
+            }
+        }
+    }
+    catch {
+        Write-HostWarn -Message "Error finding if PremiumV3 Tier is available for region  $Region : $($_.Exception.Message)"  
+        Send-TelemetryEventIfEnabled -TelemetryTitle "Generate-MigrationSettings.ps1" -EventName "Error in finding P1V3 availability" -EventType "error" -ErrorAction SilentlyContinue
+    }
+    
+    return $false
+}
+
+try {
+    $PackageResults = Get-Content $SitePackageResultsPath -Raw -ErrorAction Stop | ConvertFrom-Json
+}
+catch {
+    Write-HostError "Error reading Site package results file: $($_.Exception.Message)"
+    $ExceptionData = Get-ExceptionData -Exception $_.Exception
+    Send-TelemetryEventIfEnabled -TelemetryTitle "Generate-MigrationSettings.ps1" -EventName "Error reading migration settings file" -ExceptionData $ExceptionData -EventType "error" -ErrorAction SilentlyContinue
+    exit 1
+}
+
+$SitesPackageResults = @($PackageResults | Where-Object {($null -ne $_.SitePackagePath)})
+
+if (!$SitesPackageResults -or ($SitesPackageResults.count -eq 0)) {
+    Write-HostError -Message "No succesfully packaged site found in $SitePackageResultsPath"
+    Write-HostInfo -Message "Run Get-SitePackage.ps1 to package site contents"
+    exit 1
+}
+
+$TotalSites = $SitesPackageResults.count
+$SitesPerASP = 8
+$Tier = "PremiumV2"
+
+if ($AppServiceEnvironment) {
+    $SitesPerASP = 16
+    $Tier = "IsolatedV2" 
+    try {
+        $AseDetails = Get-AzResource -Name $AppServiceEnvironment -ResourceType Microsoft.Web/hostingEnvironments -ErrorAction Stop
+        if (!$AseDetails) {
+            Write-HostError "App Service Environment $AppServiceEnvironment doesn't exist in Subscription $SubscriptionId"
+            Write-HostError "Please provide an existing App Service Environment in Subscription $SubscriptionId"
+            exit 1  
+        }
+
+        #Warning so that user can choose to modify Region parameter and make sure all their resources are within one region if they want to
+        if($Region -and $AseDetails.Location -ne $Region) {
+            Write-HostWarn "Region '$Region' provided is different from App Service Environment '$AppServiceEnvironment' region $($AseDetails.Location)"
+            Write-HostWarn "Setting Region as '$($AseDetails.Location)' for migration"
+            $Region = $AseDetails.Location
+        }
+                 
+        $ASEDetailsWithVer = Get-AzAppServiceEnvironment -Name $AppServiceEnvironment -ResourceGroupName $ASEDetails.ResourceGroupName
+        if($ASEDetailsWithVer.Kind -eq "ASEV2") {
+            $SitesPerASP = 8
+            $Tier = "Isolated" 
+        } elseif (!$ASEDetailsWithVer.Kind) {
+            Write-HostWarn "Unable to get ASE version information"                
+        }
+    }
+    catch {
+        Write-HostError -Message "Error verifying if App Service Environment is valid : $($_.Exception.Message)"
+        exit 1  
+    }            
+} elseif (Get-IfP1V3Available) {
+    $SitesPerASP = 16
+    $Tier = "PremiumV3"
+} 
+
+Write-HostInfo -Message "Setting Default Tier as $Tier"
+$ASPsToCreate = [int][Math]::Ceiling($TotalSites/$SitesPerASP)
+$SiteIndex = 0;
+while ($ASPsToCreate -gt 0) {
+    $RandomNumber = Get-Random -Maximum 999999 -Minimum 000000
+    $tStamp = Get-Date -format yyyyMMdd
+    $ASPName = "Migration_ASP_" + $tStamp+ "_" + $RandomNumber
+
+    $MigrationSetting = New-Object PSObject
+
+    Add-Member -InputObject $MigrationSetting -MemberType NoteProperty -Name AppServicePlan -Value $ASPName
+    Add-Member -InputObject $MigrationSetting -MemberType NoteProperty -Name SubscriptionId -Value $SubscriptionId
+    Add-Member -InputObject $MigrationSetting -MemberType NoteProperty -Name Region -Value $Region
+    Add-Member -InputObject $MigrationSetting -MemberType NoteProperty -Name ResourceGroup -Value $ResourceGroup
+    Add-Member -InputObject $MigrationSetting -MemberType NoteProperty -Name Tier -Value $Tier
+    Add-Member -InputObject $MigrationSetting -MemberType NoteProperty -Name NumberOfWorkers -Value $ScriptConfig.ASPNumberOfWorkers
+    Add-Member -InputObject $MigrationSetting -MemberType NoteProperty -Name WorkerSize -Value $ScriptConfig.ASPWorkerSize
+    if ($AppServiceEnvironment) {
+        Add-Member -InputObject $MigrationSetting -MemberType NoteProperty -Name AppServiceEnvironment -Value $AppServiceEnvironment
+    }
+    
+    $SitesSettings = New-Object System.Collections.ArrayList
+    
+    $ASPCapacity = $SitesPerASP
+    while ($ASPCapacity -gt 0 -and $SiteIndex -lt $TotalSites) {
+        $Site = $SitesPackageResults[$SiteIndex]
+        $SitePackagePath = $Site.SitePackagePath
+        # get full path to package files, if path is relative should be relative to package results file 
+        if(-not ([System.IO.Path]::IsPathRooted($SitePackagePath))) {       
+            $packageFileFullPath = $SitePackageResultsPath
+            if(-not ([System.IO.Path]::IsPathRooted($packageFileFullPath))) {
+                $packageFileFullPath = Join-Path (Get-Location).Path $SitePackageResultsPath
+            }
+            $SitePackagePath = Join-Path (Split-Path -Path $packageFileFullPath) $Site.SitePackagePath
+        }
+        $SiteSetting = New-Object PSObject
+
+        Add-Member -InputObject $SiteSetting -MemberType NoteProperty -Name IISSiteName -Value $Site.SiteName
+        Add-Member -InputObject $SiteSetting -MemberType NoteProperty -Name SitePackagePath -Value $SitePackagePath
+        Add-Member -InputObject $SiteSetting -MemberType NoteProperty -Name AzureSiteName -Value $Site.SiteName
+        [void]$SitesSettings.Add($SiteSetting)
+
+        $ASPCapacity--
+        $SiteIndex++
+
+    }
+    Add-Member -InputObject $MigrationSetting -MemberType NoteProperty -Name Sites -Value $SitesSettings
+    [void]$MigrationSettings.Add($MigrationSetting)
+    $ASPsToCreate--
+}
+
+try {
+    ConvertTo-Json $MigrationSettings -Depth 10 | Out-File (New-Item -Path $MigrationSettingsFilePath -ErrorAction Stop -Force)
+}
+catch {
+    Write-HostError -Message "Error creating migration settings file: $($_.Exception.Message)" 
+    Send-TelemetryEventIfEnabled -TelemetryTitle "Generate-MigrationSettings.ps1" -EventName "Error in creating migration settings file" -EventType "error" -ErrorAction SilentlyContinue
+    exit 1
+}
+
+Write-HostInfo "Migration settings have been successfully created and written to $MigrationSettingsFilePath"
+Send-TelemetryEventIfEnabled -TelemetryTitle "Generate-MigrationSettings.ps1" -EventName "Script end" -EventType "action" -ErrorAction SilentlyContinue
+return  $MigrationSettingsFilePath
+# SIG # Begin signature block
+# MIIoLAYJKoZIhvcNAQcCoIIoHTCCKBkCAQExDzANBglghkgBZQMEAgEFADB5Bgor
+# BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCCQw2FbZUb29Inu
+# 7+TNGW5kq4CkPIP7/ZYu9acivyjkPaCCDXYwggX0MIID3KADAgECAhMzAAAEhV6Z
+# 7A5ZL83XAAAAAASFMA0GCSqGSIb3DQEBCwUAMH4xCzAJBgNVBAYTAlVTMRMwEQYD
+# VQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVNaWNy
+# b3NvZnQgQ29ycG9yYXRpb24xKDAmBgNVBAMTH01pY3Jvc29mdCBDb2RlIFNpZ25p
+# bmcgUENBIDIwMTEwHhcNMjUwNjE5MTgyMTM3WhcNMjYwNjE3MTgyMTM3WjB0MQsw
+# CQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9u
+# ZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMR4wHAYDVQQDExVNaWNy
+# b3NvZnQgQ29ycG9yYXRpb24wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIB
+# AQDASkh1cpvuUqfbqxele7LCSHEamVNBfFE4uY1FkGsAdUF/vnjpE1dnAD9vMOqy
+# 5ZO49ILhP4jiP/P2Pn9ao+5TDtKmcQ+pZdzbG7t43yRXJC3nXvTGQroodPi9USQi
+# 9rI+0gwuXRKBII7L+k3kMkKLmFrsWUjzgXVCLYa6ZH7BCALAcJWZTwWPoiT4HpqQ
+# hJcYLB7pfetAVCeBEVZD8itKQ6QA5/LQR+9X6dlSj4Vxta4JnpxvgSrkjXCz+tlJ
+# 67ABZ551lw23RWU1uyfgCfEFhBfiyPR2WSjskPl9ap6qrf8fNQ1sGYun2p4JdXxe
+# UAKf1hVa/3TQXjvPTiRXCnJPAgMBAAGjggFzMIIBbzAfBgNVHSUEGDAWBgorBgEE
+# AYI3TAgBBggrBgEFBQcDAzAdBgNVHQ4EFgQUuCZyGiCuLYE0aU7j5TFqY05kko0w
+# RQYDVR0RBD4wPKQ6MDgxHjAcBgNVBAsTFU1pY3Jvc29mdCBDb3Jwb3JhdGlvbjEW
+# MBQGA1UEBRMNMjMwMDEyKzUwNTM1OTAfBgNVHSMEGDAWgBRIbmTlUAXTgqoXNzci
+# tW2oynUClTBUBgNVHR8ETTBLMEmgR6BFhkNodHRwOi8vd3d3Lm1pY3Jvc29mdC5j
+# b20vcGtpb3BzL2NybC9NaWNDb2RTaWdQQ0EyMDExXzIwMTEtMDctMDguY3JsMGEG
+# CCsGAQUFBwEBBFUwUzBRBggrBgEFBQcwAoZFaHR0cDovL3d3dy5taWNyb3NvZnQu
+# Y29tL3BraW9wcy9jZXJ0cy9NaWNDb2RTaWdQQ0EyMDExXzIwMTEtMDctMDguY3J0
+# MAwGA1UdEwEB/wQCMAAwDQYJKoZIhvcNAQELBQADggIBACjmqAp2Ci4sTHZci+qk
+# tEAKsFk5HNVGKyWR2rFGXsd7cggZ04H5U4SV0fAL6fOE9dLvt4I7HBHLhpGdE5Uj
+# Ly4NxLTG2bDAkeAVmxmd2uKWVGKym1aarDxXfv3GCN4mRX+Pn4c+py3S/6Kkt5eS
+# DAIIsrzKw3Kh2SW1hCwXX/k1v4b+NH1Fjl+i/xPJspXCFuZB4aC5FLT5fgbRKqns
+# WeAdn8DsrYQhT3QXLt6Nv3/dMzv7G/Cdpbdcoul8FYl+t3dmXM+SIClC3l2ae0wO
+# lNrQ42yQEycuPU5OoqLT85jsZ7+4CaScfFINlO7l7Y7r/xauqHbSPQ1r3oIC+e71
+# 5s2G3ClZa3y99aYx2lnXYe1srcrIx8NAXTViiypXVn9ZGmEkfNcfDiqGQwkml5z9
+# nm3pWiBZ69adaBBbAFEjyJG4y0a76bel/4sDCVvaZzLM3TFbxVO9BQrjZRtbJZbk
+# C3XArpLqZSfx53SuYdddxPX8pvcqFuEu8wcUeD05t9xNbJ4TtdAECJlEi0vvBxlm
+# M5tzFXy2qZeqPMXHSQYqPgZ9jvScZ6NwznFD0+33kbzyhOSz/WuGbAu4cHZG8gKn
+# lQVT4uA2Diex9DMs2WHiokNknYlLoUeWXW1QrJLpqO82TLyKTbBM/oZHAdIc0kzo
+# STro9b3+vjn2809D0+SOOCVZMIIHejCCBWKgAwIBAgIKYQ6Q0gAAAAAAAzANBgkq
+# hkiG9w0BAQsFADCBiDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCldhc2hpbmd0b24x
+# EDAOBgNVBAcTB1JlZG1vbmQxHjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlv
+# bjEyMDAGA1UEAxMpTWljcm9zb2Z0IFJvb3QgQ2VydGlmaWNhdGUgQXV0aG9yaXR5
+# IDIwMTEwHhcNMTEwNzA4MjA1OTA5WhcNMjYwNzA4MjEwOTA5WjB+MQswCQYDVQQG
+# EwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwG
+# A1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSgwJgYDVQQDEx9NaWNyb3NvZnQg
+# Q29kZSBTaWduaW5nIFBDQSAyMDExMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIIC
+# CgKCAgEAq/D6chAcLq3YbqqCEE00uvK2WCGfQhsqa+laUKq4BjgaBEm6f8MMHt03
+# a8YS2AvwOMKZBrDIOdUBFDFC04kNeWSHfpRgJGyvnkmc6Whe0t+bU7IKLMOv2akr
+# rnoJr9eWWcpgGgXpZnboMlImEi/nqwhQz7NEt13YxC4Ddato88tt8zpcoRb0Rrrg
+# OGSsbmQ1eKagYw8t00CT+OPeBw3VXHmlSSnnDb6gE3e+lD3v++MrWhAfTVYoonpy
+# 4BI6t0le2O3tQ5GD2Xuye4Yb2T6xjF3oiU+EGvKhL1nkkDstrjNYxbc+/jLTswM9
+# sbKvkjh+0p2ALPVOVpEhNSXDOW5kf1O6nA+tGSOEy/S6A4aN91/w0FK/jJSHvMAh
+# dCVfGCi2zCcoOCWYOUo2z3yxkq4cI6epZuxhH2rhKEmdX4jiJV3TIUs+UsS1Vz8k
+# A/DRelsv1SPjcF0PUUZ3s/gA4bysAoJf28AVs70b1FVL5zmhD+kjSbwYuER8ReTB
+# w3J64HLnJN+/RpnF78IcV9uDjexNSTCnq47f7Fufr/zdsGbiwZeBe+3W7UvnSSmn
+# Eyimp31ngOaKYnhfsi+E11ecXL93KCjx7W3DKI8sj0A3T8HhhUSJxAlMxdSlQy90
+# lfdu+HggWCwTXWCVmj5PM4TasIgX3p5O9JawvEagbJjS4NaIjAsCAwEAAaOCAe0w
+# ggHpMBAGCSsGAQQBgjcVAQQDAgEAMB0GA1UdDgQWBBRIbmTlUAXTgqoXNzcitW2o
+# ynUClTAZBgkrBgEEAYI3FAIEDB4KAFMAdQBiAEMAQTALBgNVHQ8EBAMCAYYwDwYD
+# VR0TAQH/BAUwAwEB/zAfBgNVHSMEGDAWgBRyLToCMZBDuRQFTuHqp8cx0SOJNDBa
+# BgNVHR8EUzBRME+gTaBLhklodHRwOi8vY3JsLm1pY3Jvc29mdC5jb20vcGtpL2Ny
+# bC9wcm9kdWN0cy9NaWNSb29DZXJBdXQyMDExXzIwMTFfMDNfMjIuY3JsMF4GCCsG
+# AQUFBwEBBFIwUDBOBggrBgEFBQcwAoZCaHR0cDovL3d3dy5taWNyb3NvZnQuY29t
+# L3BraS9jZXJ0cy9NaWNSb29DZXJBdXQyMDExXzIwMTFfMDNfMjIuY3J0MIGfBgNV
+# HSAEgZcwgZQwgZEGCSsGAQQBgjcuAzCBgzA/BggrBgEFBQcCARYzaHR0cDovL3d3
+# dy5taWNyb3NvZnQuY29tL3BraW9wcy9kb2NzL3ByaW1hcnljcHMuaHRtMEAGCCsG
+# AQUFBwICMDQeMiAdAEwAZQBnAGEAbABfAHAAbwBsAGkAYwB5AF8AcwB0AGEAdABl
+# AG0AZQBuAHQALiAdMA0GCSqGSIb3DQEBCwUAA4ICAQBn8oalmOBUeRou09h0ZyKb
+# C5YR4WOSmUKWfdJ5DJDBZV8uLD74w3LRbYP+vj/oCso7v0epo/Np22O/IjWll11l
+# hJB9i0ZQVdgMknzSGksc8zxCi1LQsP1r4z4HLimb5j0bpdS1HXeUOeLpZMlEPXh6
+# I/MTfaaQdION9MsmAkYqwooQu6SpBQyb7Wj6aC6VoCo/KmtYSWMfCWluWpiW5IP0
+# wI/zRive/DvQvTXvbiWu5a8n7dDd8w6vmSiXmE0OPQvyCInWH8MyGOLwxS3OW560
+# STkKxgrCxq2u5bLZ2xWIUUVYODJxJxp/sfQn+N4sOiBpmLJZiWhub6e3dMNABQam
+# ASooPoI/E01mC8CzTfXhj38cbxV9Rad25UAqZaPDXVJihsMdYzaXht/a8/jyFqGa
+# J+HNpZfQ7l1jQeNbB5yHPgZ3BtEGsXUfFL5hYbXw3MYbBL7fQccOKO7eZS/sl/ah
+# XJbYANahRr1Z85elCUtIEJmAH9AAKcWxm6U/RXceNcbSoqKfenoi+kiVH6v7RyOA
+# 9Z74v2u3S5fi63V4GuzqN5l5GEv/1rMjaHXmr/r8i+sLgOppO6/8MO0ETI7f33Vt
+# Y5E90Z1WTk+/gFcioXgRMiF670EKsT/7qMykXcGhiJtXcVZOSEXAQsmbdlsKgEhr
+# /Xmfwb1tbWrJUnMTDXpQzTGCGgwwghoIAgEBMIGVMH4xCzAJBgNVBAYTAlVTMRMw
+# EQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVN
+# aWNyb3NvZnQgQ29ycG9yYXRpb24xKDAmBgNVBAMTH01pY3Jvc29mdCBDb2RlIFNp
+# Z25pbmcgUENBIDIwMTECEzMAAASFXpnsDlkvzdcAAAAABIUwDQYJYIZIAWUDBAIB
+# BQCgga4wGQYJKoZIhvcNAQkDMQwGCisGAQQBgjcCAQQwHAYKKwYBBAGCNwIBCzEO
+# MAwGCisGAQQBgjcCARUwLwYJKoZIhvcNAQkEMSIEILNff72yqz1O64O1X1mJQ1pp
+# wotqQQG9cnVsDaQ4fLSnMEIGCisGAQQBgjcCAQwxNDAyoBSAEgBNAGkAYwByAG8A
+# cwBvAGYAdKEagBhodHRwOi8vd3d3Lm1pY3Jvc29mdC5jb20wDQYJKoZIhvcNAQEB
+# BQAEggEAT6sKfhcVA96NLaFOcq361Z3UsgBnghitT5ydfED3qB/ZM5yG0XheX9gi
+# 9oW+S6JLvXuP+/JSr3rASuhN7IJf4aqwpeqJPUvAmOBhYQMPIfsa+hoA/mNwllkM
+# TM7NZQeWqbGAB4StwHzaeJy1TN2ucP0OSJ09fhWSOngwrMoP6pBY40dhFrOSayfM
+# xhxLF6aIDwxw6k8SDCMxvPb3hPpGzc7G9F+1DPrW94vzCAx3Iwcih0tU0pC73OV2
+# mRe6ZFvS+v98d16Od/C/YLpj4xmvYhrD/xW/k8rCiMFzDpYHMV2Ta/uegjSYG94s
+# S6nawShR7fB9Bab+v+GglHM3ET75/6GCF5YwgheSBgorBgEEAYI3AwMBMYIXgjCC
+# F34GCSqGSIb3DQEHAqCCF28wghdrAgEDMQ8wDQYJYIZIAWUDBAIBBQAwggFSBgsq
+# hkiG9w0BCRABBKCCAUEEggE9MIIBOQIBAQYKKwYBBAGEWQoDATAxMA0GCWCGSAFl
+# AwQCAQUABCC/wuKqCZw0e7hViGsZBTyzDSEzCrXA2d/vnQbFh49gnQIGaSTkQSJx
+# GBMyMDI1MTEyNTAwMjEwOC40NTJaMASAAgH0oIHRpIHOMIHLMQswCQYDVQQGEwJV
+# UzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UE
+# ChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSUwIwYDVQQLExxNaWNyb3NvZnQgQW1l
+# cmljYSBPcGVyYXRpb25zMScwJQYDVQQLEx5uU2hpZWxkIFRTUyBFU046QTAwMC0w
+# NUUwLUQ5NDcxJTAjBgNVBAMTHE1pY3Jvc29mdCBUaW1lLVN0YW1wIFNlcnZpY2Wg
+# ghHsMIIHIDCCBQigAwIBAgITMwAAAgh4nVhdksfZUgABAAACCDANBgkqhkiG9w0B
+# AQsFADB8MQswCQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UE
+# BxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSYwJAYD
+# VQQDEx1NaWNyb3NvZnQgVGltZS1TdGFtcCBQQ0EgMjAxMDAeFw0yNTAxMzAxOTQy
+# NTNaFw0yNjA0MjIxOTQyNTNaMIHLMQswCQYDVQQGEwJVUzETMBEGA1UECBMKV2Fz
+# aGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0IENv
+# cnBvcmF0aW9uMSUwIwYDVQQLExxNaWNyb3NvZnQgQW1lcmljYSBPcGVyYXRpb25z
+# MScwJQYDVQQLEx5uU2hpZWxkIFRTUyBFU046QTAwMC0wNUUwLUQ5NDcxJTAjBgNV
+# BAMTHE1pY3Jvc29mdCBUaW1lLVN0YW1wIFNlcnZpY2UwggIiMA0GCSqGSIb3DQEB
+# AQUAA4ICDwAwggIKAoICAQC1y3AI5lIz3Ip1nK5BMUUbGRsjSnCz/VGs33zvY0Ne
+# shsPgfld3/Z3/3dS8WKBLlDlosmXJOZlFSiNXUd6DTJxA9ik/ZbCdWJ78LKjbN3t
+# FkX2c6RRpRMpA8sq/oBbRryP3c8Q/gxpJAKHHz8cuSn7ewfCLznNmxqliTk3Q5LH
+# qz2PjeYKD/dbKMBT2TAAWAvum4z/HXIJ6tFdGoNV4WURZswCSt6ROwaqQ1oAYGvE
+# ndH+DXZq1+bHsgvcPNCdTSIpWobQiJS/UKLiR02KNCqB4I9yajFTSlnMIEMz/Ni5
+# 38oGI64phcvNpUe2+qaKWHZ8d4T1KghvRmSSF4YF5DNEJbxaCUwsy7nULmsFnTaO
+# jVOoTFWWfWXvBuOKkBcQKWGKvrki976j4x+5ezAP36fq3u6dHRJTLZAu4dEuOooU
+# 3+kMZr+RBYWjTHQCKV+yZ1ST0eGkbHXoA2lyyRDlNjBQcoeZIxWCZts/d3+nf1ji
+# SLN6f6wdHaUz0ADwOTQ/aEo1IC85eFePvyIKaxFJkGU2Mqa6Xzq3qCq5tokIHtjh
+# ogsrEgfDKTeFXTtdhl1IPtLcCfMcWOGGAXosVUU7G948F6W96424f2VHD8L3FoyA
+# I9+r4zyIQUmqiESzuQWeWpTTjFYwCmgXaGOuSDV8cNOVQB6IPzPneZhVTjwxbAZl
+# aQIDAQABo4IBSTCCAUUwHQYDVR0OBBYEFKMx4vfOqcUTgYOVB9f18/mhegFNMB8G
+# A1UdIwQYMBaAFJ+nFV0AXmJdg/Tl0mWnG1M1GelyMF8GA1UdHwRYMFYwVKBSoFCG
+# Tmh0dHA6Ly93d3cubWljcm9zb2Z0LmNvbS9wa2lvcHMvY3JsL01pY3Jvc29mdCUy
+# MFRpbWUtU3RhbXAlMjBQQ0ElMjAyMDEwKDEpLmNybDBsBggrBgEFBQcBAQRgMF4w
+# XAYIKwYBBQUHMAKGUGh0dHA6Ly93d3cubWljcm9zb2Z0LmNvbS9wa2lvcHMvY2Vy
+# dHMvTWljcm9zb2Z0JTIwVGltZS1TdGFtcCUyMFBDQSUyMDIwMTAoMSkuY3J0MAwG
+# A1UdEwEB/wQCMAAwFgYDVR0lAQH/BAwwCgYIKwYBBQUHAwgwDgYDVR0PAQH/BAQD
+# AgeAMA0GCSqGSIb3DQEBCwUAA4ICAQBRszKJKwAfswqdaQPFiaYB/ZNAYWDa040X
+# TcQsCaCua5nsG1IslYaSpH7miTLr6eQEqXczZoqeOa/xvDnMGifGNda0CHbQwtpn
+# IhsutrKO2jhjEaGwlJgOMql21r7Ik6XnBza0e3hBOu4UBkMl/LEX+AURt7i7+RTN
+# sGN0cXPwPSbTFE+9z7WagGbY9pwUo/NxkGJseqGCQ/9K2VMU74bw5e7+8IGUhM2x
+# spJPqnSeHPhYmcB0WclOxcVIfj/ZuQvworPbTEEYDVCzSN37c0yChPMY7FJ+HGFB
+# NJxwd5lKIr7GYfq8a0gOiC2ljGYlc4rt4cCed1XKg83f0l9aUVimWBYXtfNebhpf
+# r6Lc3jD8NgsrDhzt0WgnIdnTZCi7jxjsIBilH99pY5/h6bQcLKK/E6KCP9E1YN78
+# fLaOXkXMyO6xLrvQZ+uCSi1hdTufFC7oSB/CU5RbfIVHXG0j1o2n1tne4eCbNfKq
+# UPTE31tNbWBR23Yiy0r3kQmHeYE1GLbL4pwknqaip1BRn6WIUMJtgncawEN33f8A
+# YGZ4a3NnHopzGVV6neffGVag4Tduy+oy1YF+shChoXdMqfhPWFpHe3uJGT4GJEiN
+# s4+28a/wHUuF+aRaR0cN5P7XlOwU1360iUCJtQdvKQaNAwGI29KOwS3QGriR9F2j
+# OGPUAlpeEzCCB3EwggVZoAMCAQICEzMAAAAVxedrngKbSZkAAAAAABUwDQYJKoZI
+# hvcNAQELBQAwgYgxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpXYXNoaW5ndG9uMRAw
+# DgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24x
+# MjAwBgNVBAMTKU1pY3Jvc29mdCBSb290IENlcnRpZmljYXRlIEF1dGhvcml0eSAy
+# MDEwMB4XDTIxMDkzMDE4MjIyNVoXDTMwMDkzMDE4MzIyNVowfDELMAkGA1UEBhMC
+# VVMxEzARBgNVBAgTCldhc2hpbmd0b24xEDAOBgNVBAcTB1JlZG1vbmQxHjAcBgNV
+# BAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlvbjEmMCQGA1UEAxMdTWljcm9zb2Z0IFRp
+# bWUtU3RhbXAgUENBIDIwMTAwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoIC
+# AQDk4aZM57RyIQt5osvXJHm9DtWC0/3unAcH0qlsTnXIyjVX9gF/bErg4r25Phdg
+# M/9cT8dm95VTcVrifkpa/rg2Z4VGIwy1jRPPdzLAEBjoYH1qUoNEt6aORmsHFPPF
+# dvWGUNzBRMhxXFExN6AKOG6N7dcP2CZTfDlhAnrEqv1yaa8dq6z2Nr41JmTamDu6
+# GnszrYBbfowQHJ1S/rboYiXcag/PXfT+jlPP1uyFVk3v3byNpOORj7I5LFGc6XBp
+# Dco2LXCOMcg1KL3jtIckw+DJj361VI/c+gVVmG1oO5pGve2krnopN6zL64NF50Zu
+# yjLVwIYwXE8s4mKyzbnijYjklqwBSru+cakXW2dg3viSkR4dPf0gz3N9QZpGdc3E
+# XzTdEonW/aUgfX782Z5F37ZyL9t9X4C626p+Nuw2TPYrbqgSUei/BQOj0XOmTTd0
+# lBw0gg/wEPK3Rxjtp+iZfD9M269ewvPV2HM9Q07BMzlMjgK8QmguEOqEUUbi0b1q
+# GFphAXPKZ6Je1yh2AuIzGHLXpyDwwvoSCtdjbwzJNmSLW6CmgyFdXzB0kZSU2LlQ
+# +QuJYfM2BjUYhEfb3BvR/bLUHMVr9lxSUV0S2yW6r1AFemzFER1y7435UsSFF5PA
+# PBXbGjfHCBUYP3irRbb1Hode2o+eFnJpxq57t7c+auIurQIDAQABo4IB3TCCAdkw
+# EgYJKwYBBAGCNxUBBAUCAwEAATAjBgkrBgEEAYI3FQIEFgQUKqdS/mTEmr6CkTxG
+# NSnPEP8vBO4wHQYDVR0OBBYEFJ+nFV0AXmJdg/Tl0mWnG1M1GelyMFwGA1UdIARV
+# MFMwUQYMKwYBBAGCN0yDfQEBMEEwPwYIKwYBBQUHAgEWM2h0dHA6Ly93d3cubWlj
+# cm9zb2Z0LmNvbS9wa2lvcHMvRG9jcy9SZXBvc2l0b3J5Lmh0bTATBgNVHSUEDDAK
+# BggrBgEFBQcDCDAZBgkrBgEEAYI3FAIEDB4KAFMAdQBiAEMAQTALBgNVHQ8EBAMC
+# AYYwDwYDVR0TAQH/BAUwAwEB/zAfBgNVHSMEGDAWgBTV9lbLj+iiXGJo0T2UkFvX
+# zpoYxDBWBgNVHR8ETzBNMEugSaBHhkVodHRwOi8vY3JsLm1pY3Jvc29mdC5jb20v
+# cGtpL2NybC9wcm9kdWN0cy9NaWNSb29DZXJBdXRfMjAxMC0wNi0yMy5jcmwwWgYI
+# KwYBBQUHAQEETjBMMEoGCCsGAQUFBzAChj5odHRwOi8vd3d3Lm1pY3Jvc29mdC5j
+# b20vcGtpL2NlcnRzL01pY1Jvb0NlckF1dF8yMDEwLTA2LTIzLmNydDANBgkqhkiG
+# 9w0BAQsFAAOCAgEAnVV9/Cqt4SwfZwExJFvhnnJL/Klv6lwUtj5OR2R4sQaTlz0x
+# M7U518JxNj/aZGx80HU5bbsPMeTCj/ts0aGUGCLu6WZnOlNN3Zi6th542DYunKmC
+# VgADsAW+iehp4LoJ7nvfam++Kctu2D9IdQHZGN5tggz1bSNU5HhTdSRXud2f8449
+# xvNo32X2pFaq95W2KFUn0CS9QKC/GbYSEhFdPSfgQJY4rPf5KYnDvBewVIVCs/wM
+# nosZiefwC2qBwoEZQhlSdYo2wh3DYXMuLGt7bj8sCXgU6ZGyqVvfSaN0DLzskYDS
+# PeZKPmY7T7uG+jIa2Zb0j/aRAfbOxnT99kxybxCrdTDFNLB62FD+CljdQDzHVG2d
+# Y3RILLFORy3BFARxv2T5JL5zbcqOCb2zAVdJVGTZc9d/HltEAY5aGZFrDZ+kKNxn
+# GSgkujhLmm77IVRrakURR6nxt67I6IleT53S0Ex2tVdUCbFpAUR+fKFhbHP+Crvs
+# QWY9af3LwUFJfn6Tvsv4O+S3Fb+0zj6lMVGEvL8CwYKiexcdFYmNcP7ntdAoGokL
+# jzbaukz5m/8K6TT4JDVnK+ANuOaMmdbhIurwJ0I9JZTmdHRbatGePu1+oDEzfbzL
+# 6Xu/OHBE0ZDxyKs6ijoIYn/ZcGNTTY3ugm2lBRDBcQZqELQdVTNYs6FwZvKhggNP
+# MIICNwIBATCB+aGB0aSBzjCByzELMAkGA1UEBhMCVVMxEzARBgNVBAgTCldhc2hp
+# bmd0b24xEDAOBgNVBAcTB1JlZG1vbmQxHjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jw
+# b3JhdGlvbjElMCMGA1UECxMcTWljcm9zb2Z0IEFtZXJpY2EgT3BlcmF0aW9uczEn
+# MCUGA1UECxMeblNoaWVsZCBUU1MgRVNOOkEwMDAtMDVFMC1EOTQ3MSUwIwYDVQQD
+# ExxNaWNyb3NvZnQgVGltZS1TdGFtcCBTZXJ2aWNloiMKAQEwBwYFKw4DAhoDFQCN
+# kvu0NKcSjdYKyrhJZcsyXOUTNKCBgzCBgKR+MHwxCzAJBgNVBAYTAlVTMRMwEQYD
+# VQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVNaWNy
+# b3NvZnQgQ29ycG9yYXRpb24xJjAkBgNVBAMTHU1pY3Jvc29mdCBUaW1lLVN0YW1w
+# IFBDQSAyMDEwMA0GCSqGSIb3DQEBCwUAAgUA7M9iwjAiGA8yMDI1MTEyNDIzMDMz
+# MFoYDzIwMjUxMTI1MjMwMzMwWjB2MDwGCisGAQQBhFkKBAExLjAsMAoCBQDsz2LC
+# AgEAMAkCAQACASQCAf8wBwIBAAICEjYwCgIFAOzQtEICAQAwNgYKKwYBBAGEWQoE
+# AjEoMCYwDAYKKwYBBAGEWQoDAqAKMAgCAQACAwehIKEKMAgCAQACAwGGoDANBgkq
+# hkiG9w0BAQsFAAOCAQEAv3mAy3Xn6ZdJS1kF3hfuzPyylXUUi5JM8eKAw5c+HFyP
+# 7dloLyFUZZU52XxiZ4cZr8MC0ZThWugtaZCfpdsos+xX+RJMlcuZK8hzeF8dgxHR
+# 0o1rmvgsEVcT2NqbXbUA/ByJ6qoV6774tVWyptO3RWE6YfHiH/jl9nrfCnAvOKCE
+# h8cDJ3kbD9/1wwAphfwqAhEiFp/AnZdDbvLzseru3lTztWXkDCCvDaN3xA97ZrR/
+# wLpNF9qATMQ3uwagiG5u/moRq1slPWSkmFqpF00kRTD2/akruIXxfkpXmBAgng/K
+# rz5DrqJasl2EP1szXi315vecBmQeaugGPE5UH9wyEzGCBA0wggQJAgEBMIGTMHwx
+# CzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRt
+# b25kMR4wHAYDVQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24xJjAkBgNVBAMTHU1p
+# Y3Jvc29mdCBUaW1lLVN0YW1wIFBDQSAyMDEwAhMzAAACCHidWF2Sx9lSAAEAAAII
+# MA0GCWCGSAFlAwQCAQUAoIIBSjAaBgkqhkiG9w0BCQMxDQYLKoZIhvcNAQkQAQQw
+# LwYJKoZIhvcNAQkEMSIEIFj3sELj8DkdRJkPwp/2YBazrz1qRXW3fnbYpUr83HUR
+# MIH6BgsqhkiG9w0BCRACLzGB6jCB5zCB5DCBvQQgj/+ObwkdrZbU73vvy334W3Zn
+# k2Yqq20+TpD71FGmZ6kwgZgwgYCkfjB8MQswCQYDVQQGEwJVUzETMBEGA1UECBMK
+# V2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0
+# IENvcnBvcmF0aW9uMSYwJAYDVQQDEx1NaWNyb3NvZnQgVGltZS1TdGFtcCBQQ0Eg
+# MjAxMAITMwAAAgh4nVhdksfZUgABAAACCDAiBCCDkg9TlidkyAVAULUmLl2ekY8z
+# 11ab45+WlBXQZJtd9zANBgkqhkiG9w0BAQsFAASCAgAyR9L52ca/9lXRzQOWGDh0
+# ILKB7Z84mvSAVrl1hSFXO70DsBzWpkCeUu5bPuQ66ZhyEV2UVcrHDFj/CvDhWWKy
+# kc9r6ynzzIi/Plg/UEiKeBZBUl8CVfW3G9CF0O1O2+Q9aM9UNnnylQpr8RrnBxJP
+# CWLpERBzpnSPmIsg3KGTzGk9HLaPQC9TsjJou0gZ0OWFlzrU549iuXArnlSttfKW
+# ybnthRvU1r7w1b0XD1pEKUzR2OLuoneTMH9j10Iaaqi6NC6trmf0fb5xfdB5DX+r
+# I0uWul1d8o8vHrIGh/6Fz6VF1voYoLdcwKgPDss04xDvWKKyvDXo/KYBmS4xdAsE
+# L7n2GtepT/BBr+swgO7BJN1MFMUWTbcbJWOP1Tm3Ii4DxT4SDFc2cPIGEXsN6kgw
+# Km7A8doz3SIsvmhDDIORDxNzpptRLmbVc+4mHLd/r2n71Gp/oyFK0uoOXF0oXTZr
+# wqu4owr9cf9+QVgGfIBvMZKJ+epxu8NJQMA4JfcowtWPhkE4zZVaJ0y6Hk+9EOp5
+# 8duP/WH5rO83SjEEGTOXqaLUcnXM6mtujpUtcIKA8o6oLGoxVS7iNujyg5j96IRe
+# x+hCCNzEJd0RlQpeb7s4ymbBIdPCRh2Z3e4NV2AJ+tz3Ew8yemsLPvaCo4jKb+0E
+# M46SY8TKXtC5Z9MHMB4qJA==
+# SIG # End signature block

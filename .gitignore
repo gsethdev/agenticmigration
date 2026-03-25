@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/mcp.json
+.idea/
+
+# Generated outputs (created by pipeline runs)
+scripts/packagedsites/
+scripts/MigrationSettings.json
+scripts/ReadinessResults.json
+scripts/PackageResults.json
+scripts/MigrationResults.json
+
+# Dev artifacts
+sr1.json
+scripts/0
+*.tmp
+
+# OS files
+Thumbs.db
+.DS_Store
