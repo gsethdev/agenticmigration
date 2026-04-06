@@ -11,10 +11,10 @@ from tools import server
 @server.tool(
     name="suggest_migration_approach",
     description=(
-        "Recommend the appropriate migration tool based on the scenario. "
+        "Recommend the appropriate migration approach based on the scenario. "
         "Helps users choose between:\n"
         "- This IIS Migration MCP server (binaries-only, no source code, web.config analysis)\n"
-        "- @microsoft/github-copilot-app-modernization-mcp-server (source code available, code transformation)\n"
+        "- Source-code-based modernization (source code available, code transformation)\n"
         "Both target Azure App Service (including Managed Instance)."
     ),
 )
@@ -32,28 +32,14 @@ async def suggest_migration_approach(
     """
     if has_source_code:
         approach = {
-            "recommended_tool": "@microsoft/github-copilot-app-modernization-mcp-server",
+            "recommended_tool": "source-code-modernization",
             "approach": "source-code-modernization",
             "reason": (
-                "Source code is available. The GitHub Copilot App Modernization MCP server "
+                "Source code is available. A source-code-aware migration tool "
                 "can analyze the code, identify migration patterns, and apply code transformations "
                 "(e.g., replace SMTP with Azure Communication Services, add Managed Identity, "
                 "upgrade .NET Framework to .NET 8)."
             ),
-            "setup": {
-                "mcp_json": {
-                    "servers": {
-                        "ghcp-appmod-mcp-server": {
-                            "command": "npx",
-                            "args": [
-                                "-y",
-                                "@microsoft/github-copilot-app-modernization-mcp-server@latest",
-                            ],
-                        }
-                    }
-                },
-                "usage": "In Copilot Chat: 'Assess this .NET project for Azure migration'",
-            },
             "available_tasks": [
                 "Migrate to Managed Identity based Database (Azure SQL, PostgreSQL)",
                 "Migrate to Azure File Storage",
@@ -104,8 +90,8 @@ async def suggest_migration_approach(
             )
 
         approach["future_modernization"] = (
-            "After migrating, if source code is later obtained, use "
-            "@microsoft/github-copilot-app-modernization-mcp-server to incrementally "
+            "After migrating, if source code is later obtained, use a "
+            "source-code-aware modernization tool to incrementally "
             "modernize: upgrade framework, replace legacy patterns, add managed identity."
         )
 
