@@ -16,20 +16,14 @@ env/
 .vscode/mcp.json
 .idea/
 
+# PowerShell migration scripts (users download from Microsoft)
+scripts/
+
 # Generated outputs (created by pipeline runs)
-scripts/packagedsites/
-scripts/MigrationSettings.json
-scripts/ReadinessResults.json
-scripts/PackageResults.json
-scripts/MigrationResults.json
 
 # Dev artifacts
 sr1.json
-scripts/0
 *.tmp
-
-# Config with potential telemetry keys
-scripts/ScriptConfig.json
 
 # OS files
 Thumbs.db
