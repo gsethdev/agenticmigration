@@ -12,17 +12,189 @@ This MCP server exposes 13 tools that guide the end-to-end migration workflow:
 4. **Deployment Planning** — Package sites, generate ARM templates for MI adapters, create install.ps1
 5. **Execution** — Deploy to Azure App Service with confirmation gate
 
-## Prerequisites
+## Why Use This Over Raw PowerShell Scripts?
+
+The underlying migration scripts are freely available from Microsoft — you can run them directly from the command line. So why wrap them in an MCP server with AI agents?
+
+**Guided intelligence, not just automation.** The PowerShell scripts are powerful but dumb — they package, configure, and deploy exactly what you tell them to. They don't tell you *what* to do. This system adds a decision-making layer: it analyzes your apps, detects OS-level dependencies (COM, Registry, SMTP, local file I/O), recommends MI vs standard App Service, generates the right adapter ARM templates and install scripts, and validates every step before execution. With raw scripts, you need to know all of this upfront and wire it together yourself.
+
+**Agentic workflow with human-in-the-loop.** The agent orchestration (`@iis-migrate`) breaks the migration into phases with explicit decision points. It won't skip assessment, won't deploy without confirmation, and won't let you misconfigure MI (PV4 + IsCustomMode=true is enforced). Each phase hands off to a specialist subagent that knows exactly which tools to call and what questions to ask. The result is a guided conversation — not a 200-line script you have to read, understand, and hope you parameterized correctly.
+
+**Practical benefits:**
+
+- **Reduced risk** — Automated readiness checks, source code analysis (via AppCat), and MI constraint validation catch issues before they become failed deployments
+- **Faster time-to-migrate** — Discovery through deployment in a single conversation, with the AI handling script orchestration, JSON wiring between phases, and Azure authentication
+- **No migration expertise required** — The system knows which sites need MI, which need adapters, which need install scripts, and which can go to standard App Service. You don't need to memorize the MI provisioning split (adapters via ARM vs OS features via install.ps1)
+- **Audit trail** — Every phase produces artifacts (ReadinessResults.json, ARM templates, MigrationSettings.json) that document exactly what was assessed, recommended, and deployed
+- **Works with any MCP client** — VS Code Copilot, Claude Desktop, Cursor, or any MCP-compatible tool. The intelligence travels with the server, not the client
+
+## End-to-End Migration Flow
+
+The complete journey from IIS discovery to a running app on Managed Instance on App Service:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     PHASE 0: SETUP                                      │
+│                                                                         │
+│  ► configure_scripts_path  OR  download_migration_scripts               │
+│    Points the server to Microsoft's migration PowerShell scripts        │
+│                                                                         │
+│  Output: Scripts ready ✓                                                │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     PHASE 1: DISCOVERY                                  │
+│                                                                         │
+│  ► discover_iis_sites                                                   │
+│    Scans local IIS → enumerates all web sites, app pools, bindings,     │
+│    framework versions, virtual directories                              │
+│    Runs 15 readiness checks per site (config errors, HTTPS, ports,      │
+│    content size, auth, ISAPI, app pool identity, etc.)                  │
+│    Detects source code (.sln, .csproj, .cs, .vb) near site paths        │
+│                                                                         │
+│  Output: ReadinessResults.json                                          │
+│          Per-site: READY / READY_WITH_WARNINGS / READY_WITH_ISSUES /    │
+│                    BLOCKED                                              │
+│                                                                         │
+│  ► choose_assessment_mode                                               │
+│    Routes each site to: assess (config-only or config+source),          │
+│    skip to packaging, or mark blocked                                   │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     PHASE 2: ASSESSMENT                                 │
+│                                                                         │
+│  ► assess_site_readiness  (per site)                                    │
+│    Enriches readiness checks with human-readable descriptions,          │
+│    recommendations, and documentation links from .resx metadata         │
+│    Reports: overall status, failed checks, warning checks,              │
+│    framework version, pipeline mode, virtual apps                       │
+│                                                                         │
+│  ► assess_source_code  (if source/AppCat report available)              │
+│    Parses AppCat JSON → identifies MI-relevant dependencies:            │
+│      • Registry access (Local.0001) → needs Registry adapter            │
+│      • Local file I/O (Local.0003/0004) → needs Storage adapter         │
+│      • SMTP (SMTP.0001) → needs install.ps1                            │
+│      • COM/GAC/MSMQ → needs install.ps1                                │
+│      • Certificates (Security.0103) → needs Key Vault                   │
+│    Categorizes: mandatory / optional / potential issues                  │
+│    Maps to: install_script_features + adapter_features                  │
+│                                                                         │
+│  Output: Per-site assessment with MI dependency mapping                 │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     PHASE 3: RECOMMENDATION & PROVISIONING              │
+│                                                                         │
+│  ► recommend_target  (per site)                                         │
+│    Analyzes config + source assessments →                               │
+│    Recommends: MI_AppService (PV4) / AppService (PV2) / ContainerApps   │
+│    Returns: confidence level, reasoning, MI reasons, blockers,          │
+│    required adapters, required install script features                   │
+│                                                                         │
+│  ► generate_install_script  (MI sites with OS-level dependencies)       │
+│    Generates install.ps1 for: SMTP, MSMQ, COM/MSI, Crystal Reports,    │
+│    custom fonts. Runs at app startup on the MI instance.                │
+│                                                                         │
+│  ► generate_adapter_arm_template  (MI sites with platform dependencies) │
+│    Generates ARM template for:                                          │
+│      • Registry adapters (Key Vault-backed)                             │
+│      • Storage mounts (AzureFiles / LocalStorage / Custom VNET)         │
+│    Includes: managed identity config, RBAC guidance, deployment cmds    │
+│                                                                         │
+│  Output: install.ps1 + ARM template (customized per site)               │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────┐        │
+│  │  MI PROVISIONING SPLIT (critical concept):                  │        │
+│  │                                                             │        │
+│  │  ARM Template (platform-level):                             │        │
+│  │    • Registry adapters → Key Vault secrets                  │        │
+│  │    • Storage mounts → Azure Files / local / VNET            │        │
+│  │                                                             │        │
+│  │  install.ps1 (OS-level):                                    │        │
+│  │    • COM/MSI registration (regsvr32, RegAsm, msiexec)       │        │
+│  │    • SMTP Server feature                                    │        │
+│  │    • MSMQ                                                   │        │
+│  │    • Crystal Reports runtime                                │        │
+│  │    • Custom fonts                                           │        │
+│  │    • File/folder permissions (ACLs)                         │        │
+│  └─────────────────────────────────────────────────────────────┘        │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     PHASE 4: DEPLOYMENT PLANNING & PACKAGING            │
+│                                                                         │
+│  ► plan_deployment                                                      │
+│    Collects: subscription, resource group, region, plan name            │
+│    Validates: PV4 SKU for MI, IsCustomMode=true enforced                │
+│    Optionally queries Azure for existing MI plans to reuse              │
+│                                                                         │
+│  ► package_site                                                         │
+│    Creates ZIP packages from IIS site binaries + web.config             │
+│    Optionally injects install.ps1 into the package                      │
+│                                                                         │
+│  ► generate_migration_settings                                          │
+│    Creates MigrationSettings.json with:                                 │
+│      • App Service Plan config (name, SKU, workers)                     │
+│      • Per-site: IIS name → Azure name, package path                   │
+│      • MI fields: Tier=PremiumV4, IsCustomMode=true                    │
+│                                                                         │
+│  Output: Site ZIPs + MigrationSettings.json                             │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     PHASE 5: EXECUTION  ⚠️ CREATES BILLABLE RESOURCES   │
+│                                                                         │
+│  ► confirm_migration                                                    │
+│    Presents full summary: plans, sites, SKUs, costs                     │
+│    REQUIRES explicit "yes" before proceeding                            │
+│                                                                         │
+│  ► migrate_sites                                                        │
+│    For each plan:                                                       │
+│      1. Set Azure subscription context                                  │
+│      2. Create/validate Resource Group                                  │
+│      3. Create/validate App Service Plan (PV4 for MI)                   │
+│    For each site:                                                       │
+│      4. Create Web App                                                  │
+│      5. Configure: .NET version, 32-bit mode, pipeline mode             │
+│      6. Configure virtual directories/applications                      │
+│      7. Disable basic auth (FTP + SCM)                                  │
+│      8. Deploy ZIP package via REST API                                 │
+│                                                                         │
+│  Output: MigrationResults.json                                          │
+│          Per-site: Azure URL, Resource ID, status                       │
+│                                                                         │
+│  ► Deploy adapter ARM template (post-migration)                         │
+│    Configures registry/storage adapters on the MI plan                  │
+│    Assigns managed identity for Key Vault access                        │
+└─────────────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+                    ┌────────────────────────┐
+                    │   APP RUNNING ON MI    │
+                    │   *.azurewebsites.net  │
+                    │                        │
+                    │   ✓ Registry → KV      │
+                    │   ✓ Storage → AzFiles  │
+                    │   ✓ COM registered     │
+                    │   ✓ SMTP enabled       │
+                    └────────────────────────┘
+```
 
 | Requirement | Purpose | Required? |
 |------------|---------|-----------|
 | **Windows Server** with IIS | Source server to discover and package sites | Yes |
-| **PowerShell 5.1** | Runs bundled migration scripts (ships with Windows) | Yes |
+| **PowerShell 5.1** | Runs migration scripts (ships with Windows) | Yes |
 | **Python 3.10+** | MCP server runtime | Yes |
 | **Administrator privileges** | IIS discovery, packaging, and migration | Yes |
 | **Azure subscription** | Target for migration | Yes (execution phase only) |
 | **Azure PowerShell (`Az` module)** | Deploy to Azure | Yes (execution phase only) |
-| **Node.js 18+ LTS** | Only if using the app-modernization MCP server | Optional |
+| **Migration Scripts ZIP** | [Download from Microsoft](https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip) | Yes |
 | **AppCat CLI** | Source code assessment (`appcat analyze`) | Optional |
 
 ## Installation
@@ -38,6 +210,10 @@ python -m venv .venv
 
 # 3. Install dependencies
 pip install -r requirements.txt
+
+# 4. Download the PowerShell migration scripts
+#    Download from: https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip
+#    Unzip to a local folder (e.g., C:\MigrationScripts)
 ```
 
 ## Setup
@@ -51,10 +227,10 @@ pip install -r requirements.txt
 2. Open the folder in VS Code
 3. GitHub Copilot will auto-detect the MCP server via `.vscode/mcp.json`
 4. In Copilot Chat, use the **`@iis-migrate`** agent for guided workflow
-5. Or call individual tools directly:
+5. When prompted, provide the path to the unzipped migration scripts folder
+6. Or call individual tools directly:
+   - *"Configure scripts path to C:\MigrationScripts"*
    - *"Discover all IIS sites on this server"*
-   - *"Assess readiness for Default Web Site"*
-   - *"Package all sites for migration"*
 
 ### Option B: Any MCP Client (Copilot CLI, Claude Desktop, Cursor, etc.)
 
@@ -76,14 +252,15 @@ The server uses **stdio transport** and works with any MCP-compatible client.
 
 ### Option C: Direct PowerShell (No MCP / No AI)
 
-Run the bundled scripts directly without the MCP layer:
+Download and run the scripts directly without the MCP layer:
 
 ```powershell
-# Run as Administrator
-cd scripts
+# 1. Download scripts from:
+#    https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip
+# 2. Unzip and cd into the folder
+# 3. Run as Administrator
 
-# 1. Discover IIS sites
-.\IISDiscovery.ps1
+# Discover IIS sites
 
 # 2. Package sites
 .\Get-SitePackage.ps1 -ReadinessResultsFilePath ReadinessResults.json -MigrateSitesWithIssues
@@ -107,30 +284,15 @@ The `.vscode/mcp.json.example` file is provided as a template. Copy it to `.vsco
 
 - **`command`**: Path to your Python executable. Use `"python"` if it's on your PATH, or the full path to your virtual environment's Python (e.g., `".venv\\Scripts\\python.exe"`).
 
-### Script Config (`scripts/ScriptConfig.json`)
+### Script Config (`ScriptConfig.json`)
+
+This file is included in the downloaded migration scripts (not in this repository).
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `EnableTelemetry` | `false` | Set to `true` to send anonymous usage telemetry to Microsoft |
 | `PackagedSitesFolder` | `packagedsites\` | Output folder for site ZIP packages |
 | `FatalChecks` | `ContentSizeCheck,...` | Checks that block migration if failed |
-
-### Optional: App Modernization MCP Server
-
-For source code modernization (upgrading .NET Framework, replacing SMTP with Azure Communication Services, etc.), add the companion MCP server:
-
-```json
-{
-  "servers": {
-    "app-modernization": {
-      "command": "npx",
-      "args": ["-y", "@microsoft/github-copilot-app-modernization-mcp-server@latest"]
-    }
-  }
-}
-```
-
-Requires **Node.js 18+ LTS**. Licensed under MIT — free for commercial use.
 
 ## Workflow Overview
 
@@ -174,6 +336,7 @@ For apps with OS-level dependencies (Windows Registry, COM components, SMTP, loc
 │   ├── iis-deploy-plan.agent.md # Deployment planning subagent
 │   └── iis-execute.agent.md   # Execution subagent
 ├── tools/                     # MCP tool implementations (Python)
+│   ├── configure.py           # Script path configuration
 │   ├── discover.py            # IIS site discovery
 │   ├── assess.py              # Config-based assessment
 │   ├── assess_source.py       # AppCat source code assessment
@@ -185,15 +348,12 @@ For apps with OS-level dependencies (Windows Registry, COM components, SMTP, loc
 │   ├── confirm_migration.py   # Pre-execution confirmation gate
 │   ├── migrate.py             # Azure deployment execution
 │   └── suggest.py             # Migration approach router
-├── scripts/                   # Bundled PowerShell migration scripts
-│   ├── IISDiscovery.ps1
-│   ├── Get-SiteReadiness.ps1
-│   ├── Get-SitePackage.ps1
-│   ├── Generate-MigrationSettings.ps1
-│   ├── Invoke-SiteMigration.ps1
-│   └── ...
 └── ARCHITECTURE.md            # Detailed architecture documentation
 ```
+
+> **Note:** PowerShell migration scripts are NOT bundled. Download them from
+> [Microsoft](https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip)
+> and configure the path using the `configure_scripts_path` tool.
 
 ## Azure Authentication
 
@@ -213,4 +373,5 @@ az account set --subscription "<your-subscription-id>"
 
 MIT License. See [LICENSE](LICENSE) for details.
 
-The bundled PowerShell migration scripts are provided by Microsoft for Azure App Service migration.
+The PowerShell migration scripts are provided by Microsoft for Azure App Service migration
+and must be [downloaded separately](https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip).

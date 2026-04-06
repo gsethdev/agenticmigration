@@ -69,7 +69,7 @@ from user interaction through to Azure deployment. Readable in any text editor.
 ║  └─────────────┼─────────────┼──────────────┼──────────────┼─────────────┼───────────────────┘ ║
 ║                │             │              │              │             │                      ║
 ║  ┌─────────────┴─────────────┴──────────────┴──────────────┴─────────────┴───────────────────┐ ║
-║  │                         POWERSHELL SCRIPTS  (scripts/)                                    │ ║
+║  │            POWERSHELL SCRIPTS  (downloaded from Microsoft, path set at runtime)            │ ║
 ║  │                                                                                           │ ║
 ║  │  IISDiscovery.ps1          Get-SitePackage.ps1         Invoke-SiteMigration.ps1           │ ║
 ║  │  Get-SiteReadiness.ps1     Generate-MigrationSettings  Get-MIAppServicePlan.ps1           │ ║
@@ -134,8 +134,7 @@ external CLIs into a unified, agent-driven migration workflow.
                                │     │                 │                    │
                                │  ps_runner.py         │────────────────────┘
                                │  (Python→PS bridge)   │     subprocess calls
-                               │     │                 │     to scripts/*.ps1
-                               │  7 PowerShell Scripts │     and Azure APIs
+                               │                       │     to downloaded *.ps1
                                └──────────────────────┘
 ```
 
@@ -153,7 +152,7 @@ external CLIs into a unified, agent-driven migration workflow.
 ├──────────────────────────────────────────────────────────┤
 │  ps_runner.py           ← UTF-16 LE / UTF-8 decoding   │  Python ↔ PS bridge
 ├──────────────────────────────────────────────────────────┤
-│  PowerShell Scripts  (scripts/*.ps1) ← 7 scripts       │  IIS & Azure operations
+│  PowerShell Scripts  (downloaded, user-configured path) │  IIS & Azure operations
 ├──────────────────────────────────────────────────────────┤
 │  IIS  │  Azure (ARM / App Service / KV / Storage)       │  External systems
 └──────────────────────────────────────────────────────────┘
@@ -192,7 +191,11 @@ external CLIs into a unified, agent-driven migration workflow.
 | **iis-deploy-plan** | Packaging & MigrationSettings creation | `plan_deployment`, `package_site`, `generate_migration_settings` |
 | **iis-execute** | Final confirmation & deployment (human gate) | `confirm_migration`, `migrate_sites` |
 
-### 2.3 PowerShell Scripts (7)
+### 2.3 PowerShell Scripts (7) — Downloaded from Microsoft
+
+> **These scripts are NOT included in this repository.** Users must download them from
+> [Microsoft](https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip)
+> and configure the path using `configure_scripts_path` or `download_migration_scripts`.
 
 | Script | Purpose | Requires Admin | Requires Azure |
 |--------|---------|:-:|:-:|
@@ -212,9 +215,9 @@ external CLIs into a unified, agent-driven migration workflow.
 | `ps_runner.py` | Python→PowerShell bridge — subprocess exec, UTF-16 LE/UTF-8 BOM decode, error categorization |
 | `tools/__init__.py` | Shared `FastMCP` server instance |
 | `requirements.txt` | `mcp[cli]>=1.0.0` |
-| `scripts/ScriptConfig.json` | PowerShell configuration (paths, defaults) |
-| `scripts/TemplateMigrationSettings.json` | MigrationSettings.json template with MI fields |
-| `scripts/WebAppCheckResources.resx` | Readiness check descriptions and messages |
+| `ScriptConfig.json` | PowerShell configuration (included in downloaded scripts) |
+| `TemplateMigrationSettings.json` | MigrationSettings.json template (included in downloaded scripts) |
+| `WebAppCheckResources.resx` | Readiness check descriptions (included in downloaded scripts) |
 
 ---
 
@@ -632,18 +635,11 @@ Migration/
 │   ├── confirm_migration.py               # confirm_migration
 │   └── migrate.py                         # migrate_sites
 │
-├── scripts/
-│   ├── IISDiscovery.ps1                   # IIS site enumeration + checks
-│   ├── Get-SiteReadiness.ps1              # Readiness assessment engine
-│   ├── Get-SitePackage.ps1                # Site → ZIP packaging
-│   ├── Generate-MigrationSettings.ps1     # MigrationSettings.json builder
-│   ├── Invoke-SiteMigration.ps1           # Azure deployment executor
-│   ├── IISMigration.ps1                   # Main orchestration script
-│   ├── MigrationHelperFunctions.psm1      # Shared PS utility functions
-│   ├── ScriptConfig.json                  # Script configuration
-│   ├── TemplateMigrationSettings.json     # Settings template
-│   ├── WebAppCheckResources.resx          # Check descriptions
-│   └── README.md                          # PS script documentation
+│
+│   # NOTE: scripts/ directory is NOT in this repo.
+│   # Users download PowerShell scripts from Microsoft:
+│   # https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip
+│   # Then configure the path via configure_scripts_path tool.
 │
 └── .github/agents/
     ├── iis-migrate.agent.md               # Orchestrator agent

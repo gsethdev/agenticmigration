@@ -130,13 +130,18 @@ The system is built on the **Model Context Protocol (MCP)**, an open protocol th
 │  FastMCP Server (server.py)                                      │
 │    13 Python Tool Modules (tools/*.py)                           │
 │      └── ps_runner.py (Python → PowerShell bridge)               │
-│            └── 7 PowerShell Scripts (scripts/*.ps1)              │
+│            └── Downloaded PowerShell Scripts (user-configured)    │
 │                  ├── Local IIS (discovery, packaging)            │
 │                  └── Azure ARM API (deployment)                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 The server exposes **13 MCP tools** organized across **5 phases**, orchestrated by **6 Copilot agents** (1 orchestrator + 5 specialist subagents).
+
+> **Important:** The PowerShell migration scripts are **not included** in this repository.
+> Users must download them from [Microsoft](https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip)
+> and configure the path using the `configure_scripts_path` tool. This ensures you always
+> use the latest version of Microsoft's scripts, avoiding version mismatch issues.
 
 ---
 
@@ -508,14 +513,15 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 
-# Download Microsoft's migration scripts
+# Download Microsoft's migration scripts (NOT included in this repo)
 # From: https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip
 # Unzip to C:\MigrationScripts (or your preferred path)
 
 # Start using in VS Code with Copilot
 # 1. Copy .vscode/mcp.json.example → .vscode/mcp.json
 # 2. Open folder in VS Code
-# 3. In Copilot Chat: @iis-migrate "Discover my IIS sites"
+# 3. In Copilot Chat: "Configure scripts path to C:\MigrationScripts"
+# 4. Then: @iis-migrate "Discover my IIS sites"
 ```
 
 The server also works with **any MCP-compatible client** — Claude Desktop, Cursor, Copilot CLI, or custom integrations — via stdio transport.
