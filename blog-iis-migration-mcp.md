@@ -55,7 +55,9 @@ With standard App Service, you'd need to rewrite every one of these dependencies
 - [PremiumV4 Pricing Tier](https://learn.microsoft.com/en-us/azure/app-service/app-service-configure-premium-tier)
 - [Azure Key Vault](https://learn.microsoft.com/en-us/azure/key-vault/general/overview)
 - [Azure Files](https://learn.microsoft.com/en-us/azure/storage/files/storage-files-introduction)
-- [AppCat (.NET) — Azure Migrate Application and Code Assessment](https://learn.microsoft.com/en-us/azure/migrate/appcat/dotnet)
+- [Azure Migrate application and code assessment for .NET](https://learn.microsoft.com/en-us/azure/migrate/appcat/dotnet)
+- [Install Azure Migrate application and code assessment for .NET](https://learn.microsoft.com/en-us/dotnet/azure/migration/appcat/install)
+- [Interpret the analysis results](https://learn.microsoft.com/en-us/dotnet/azure/migration/appcat/interpret-results)
 
 ---
 
@@ -95,7 +97,7 @@ The IIS Migration MCP Server introduces an **AI orchestration layer** that trans
 | Pray you set PV4 + IsCustomMode correctly | **Enforced automatically** — every tool validates Managed Instance constraints |
 | Deploy and find out what broke | `confirm_migration` presents a full cost/resource summary before touching Azure |
 
-**The core value proposition: the AI knows the Managed Instance provisioning split.** It knows that registry access needs an ARM template with Key Vault-backed adapters, while SMTP needs an `install.ps1` section enabling the Windows SMTP Server feature. You don't need to know this. The system detects it from your IIS configuration and AppCat analysis, then generates exactly the right artifacts.
+**The core value proposition: the AI knows the Managed Instance provisioning split.** It knows that registry access needs an ARM template with Key Vault-backed adapters, while SMTP needs an `install.ps1` section enabling the Windows SMTP Server feature. You don't need to know this. The system detects it from your IIS configuration and source code analysis, then generates exactly the right artifacts.
 
 ### Human-in-the-Loop Safety
 
@@ -189,7 +191,7 @@ After discovery, you decide the path for each site:
 
 The tool classifies each site into one of five actions:
 - `assess_config_only` — IIS/web.config analysis
-- `assess_config_and_source` — Config + AppCat source code analysis (when source is detected)
+- `assess_config_and_source` — Config + source code analysis (when source is detected)
 - `package` — Skip to packaging
 - `blocked` — Fatal errors, cannot proceed
 - `skip` — User chose to exclude
@@ -213,19 +215,21 @@ This enrichment comes from `WebAppCheckResources.resx`, an XML resource file tha
 **Output**: Overall status, enriched failed/warning checks, framework version, pipeline mode, binding details.
 
 #### 4. `assess_source_code`
-**Purpose**: Analyze an AppCat JSON report to identify Managed Instance-relevant source code dependencies.
+**Purpose**: Analyze an [Azure Migrate application and code assessment for .NET](https://learn.microsoft.com/en-us/azure/migrate/appcat/dotnet) JSON report to identify Managed Instance-relevant source code dependencies.
 
-If your application has source code and you've run `appcat analyze` against it, this tool parses the results and maps findings to migration actions:
+If your application has source code and you've run the assessment tool against it, this tool parses the results and maps findings to migration actions:
 
-| AppCat Rule | Dependency Found | Migration Action |
-|-------------|-----------------|-----------------|
-| `Local.0001` | Registry access (`Microsoft.Win32.Registry`) | Registry Adapter (ARM template) |
-| `Local.0003` / `Local.0004` | Local file I/O (`System.IO.File`, hardcoded paths) | Storage Adapter (ARM template) |
-| `SMTP.0001` | SMTP usage (`System.Net.Mail.SmtpClient`) | install.ps1 (SMTP Server feature) |
-| COM references | COM Interop | install.ps1 (regsvr32/RegAsm) |
-| GAC references | Global Assembly Cache | install.ps1 (GAC install) |
-| MSMQ references | Message queuing | install.ps1 (MSMQ feature) |
-| `Security.0103` | Certificate access | Key Vault integration |
+| Dependency Detected | Migration Action |
+|--------------------|------------------|
+| Windows Registry access | Registry Adapter (ARM template) |
+| Local file system I/O / hardcoded paths | Storage Adapter (ARM template) |
+| SMTP usage | install.ps1 (SMTP Server feature) |
+| COM Interop | install.ps1 (regsvr32/RegAsm) |
+| Global Assembly Cache (GAC) | install.ps1 (GAC install) |
+| Message Queuing (MSMQ) | install.ps1 (MSMQ feature) |
+| Certificate access | Key Vault integration |
+
+The tool matches rules from the assessment output against known Managed Instance-relevant patterns. For a complete list of rules and categories, see [Interpret the analysis results](https://learn.microsoft.com/en-us/dotnet/azure/migration/appcat/interpret-results).
 
 **Output**: Issues categorized as mandatory/optional/potential, plus `install_script_features` and `adapter_features` lists that feed directly into Phase 3 tools.
 
@@ -325,6 +329,8 @@ Calls `Get-SitePackage.ps1` to:
 
 This is the final configuration artifact. It calls `Generate-MigrationSettings.ps1` and then post-processes the output to inject Managed Instance-specific fields:
 
+> **Important**: The Managed Instance on App Service Plan is **not automatically created** by the migration tools. You must **pre-create the App Service Plan** (PV4 SKU with `IsCustomMode=true`) in the Azure portal or via CLI before generating migration settings. When running `generate_migration_settings`, provide the **name of your existing Managed Instance plan** so the settings file references it correctly.
+
 ```json
 {
   "AppServicePlan": "mi-plan-eastus",
@@ -396,7 +402,7 @@ Handles Phase 1. Runs `discover_iis_sites`, presents a summary table of all site
 
 ### `iis-assess` — Assessment Specialist
 
-Handles Phase 2. Runs `assess_site_readiness` for every site, and `assess_source_code` when AppCat results are available. Merges findings, highlights Managed Instance-relevant issues, and produces the adapter/install features lists that drive Phase 3.
+Handles Phase 2. Runs `assess_site_readiness` for every site, and `assess_source_code` when source code assessment results are available. Merges findings, highlights Managed Instance-relevant issues, and produces the adapter/install features lists that drive Phase 3.
 
 ### `iis-recommend` — Recommendation Specialist
 
@@ -467,7 +473,7 @@ Here's what a complete migration conversation looks like:
 
 **Phase 2 — Assessment**:
 > Agent runs `assess_site_readiness` for HRPortal — finds GACCheck and RegistryCheck failures.
-> Runs `assess_source_code` using AppCat report — confirms COM interop, registry access, and SMTP usage.
+> Runs `assess_source_code` using source code assessment report — confirms COM interop, registry access, and SMTP usage.
 
 **Phase 3 — Recommendation**:
 > Agent runs `recommend_target`:
@@ -500,7 +506,7 @@ Here's what a complete migration conversation looks like:
 | **Azure subscription** | Target for deployment (execution phase only) |
 | **Azure PowerShell (`Az` module)** | Deploy to Azure (execution phase only) |
 | **[Migration Scripts ZIP](https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip)** | Microsoft's PowerShell migration scripts |
-| **[AppCat CLI](https://learn.microsoft.com/en-us/azure/migrate/appcat/dotnet)** | Source code analysis (optional) |
+| **[Azure Migrate application and code assessment for .NET](https://learn.microsoft.com/en-us/dotnet/azure/migration/appcat/install)** | Source code analysis (optional) |
 | **[FastMCP](https://pypi.org/project/mcp/)** (`mcp[cli]>=1.0.0`) | MCP server framework |
 
 ### Quick Start
