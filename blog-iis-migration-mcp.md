@@ -139,7 +139,7 @@ The system is built on the **Model Context Protocol (MCP)**, an open protocol th
 The server exposes **13 MCP tools** organized across **5 phases**, orchestrated by **6 Copilot agents** (1 orchestrator + 5 specialist subagents).
 
 > **Important:** The PowerShell migration scripts are **not included** in this repository.
-> Users must download them from [Microsoft](https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip)
+> Users must download them from [GitHub](https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip)
 > and configure the path using the `configure_scripts_path` tool. This ensures you always
 > use the latest version of Microsoft's scripts, avoiding version mismatch issues.
 
@@ -152,7 +152,7 @@ The server exposes **13 MCP tools** organized across **5 phases**, orchestrated 
 #### `configure_scripts_path`
 **Purpose**: Point the server to Microsoft's downloaded migration PowerShell scripts.
 
-Before any migration work, you need to download the scripts from [Microsoft's migration portal](https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip), unzip them, and tell the server where they are.
+Before any migration work, you need to download the scripts from [GitHub](https://appmigration.microsoft.com/api/download/psscripts/AppServiceMigrationScripts.zip), unzip them, and tell the server where they are.
 
 ```
 "Configure scripts path to C:\MigrationScripts"
