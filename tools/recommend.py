@@ -1,7 +1,7 @@
 """recommend_target - Recommend Azure deployment target per site.
 
 Pure Python tool — analyzes combined config + source assessment results
-and recommends MI on App Service, regular App Service, or Container Apps.
+and recommends Managed Instance on App Service, regular App Service, or Container Apps.
 """
 
 import json
@@ -9,7 +9,7 @@ import json
 from tools import server
 
 
-# Indicators that an app needs MI on App Service
+# Indicators that an app needs Managed Instance on App Service
 _MI_INDICATORS = {
     "Local.0001": "Windows Registry access",
     "SMTP.0001": "SMTP server dependency",
@@ -35,7 +35,7 @@ def _build_provisioning_guidance(install_features: list, adapter_features: list)
         parts.append(
             f"ADAPTERS ({', '.join(adapter_features)}): Use generate_adapter_arm_template "
             "to create an ARM template for registry adapters and/or storage mounts. "
-            "Alternatively, configure these in Azure Portal > App Service Plan > MI settings."
+            "Alternatively, configure these in Azure Portal > App Service Plan > Managed Instance settings."
         )
     if install_features:
         parts.append(
@@ -43,7 +43,7 @@ def _build_provisioning_guidance(install_features: list, adapter_features: list)
             "to create install.ps1 for OS-level feature enablement (COM/MSI, SMTP, MSMQ, etc.)."
         )
     if not parts:
-        parts.append("No special provisioning needed beyond standard MI App Service Plan.")
+        parts.append("No special provisioning needed beyond standard Managed Instance App Service Plan.")
     return " | ".join(parts)
 
 
@@ -147,7 +147,7 @@ async def recommend_target(
             confidence = "medium"
             reasoning += (
                 f" Note: The app uses .NET {fw} which could run on regular App Service. "
-                "MI is recommended only due to the OS dependencies detected."
+                "Managed Instance is recommended only due to the OS dependencies detected."
             )
     elif is_framework:
         target = "AppService"
@@ -189,7 +189,7 @@ async def recommend_target(
             _build_provisioning_guidance(install_features, adapter_features)
             if target == "MI_AppService" else ""
         ),        "note": (
-            "MI on App Service requires PV4 SKU with IsCustomMode=true. "
+            "Managed Instance on App Service requires PV4 SKU with IsCustomMode=true. "
             "This is the ONLY valid configuration for Managed Instance."
         ) if target == "MI_AppService" else "",
     }

@@ -1,6 +1,6 @@
-"""plan_deployment - Plan MI on App Service deployment.
+"""plan_deployment - Plan Managed Instance on App Service deployment.
 
-Validates existing MI plans, proposes new ones, and maps sites to plans.
+Validates existing Managed Instance plans, proposes new ones, and maps sites to plans.
 Optionally queries Azure for existing plans via PowerShell.
 """
 
@@ -19,8 +19,8 @@ from ps_runner import run_powershell, read_json_file, PsError, SCRIPTS_DIR
     description=(
         "Plan the Azure App Service deployment for migrated IIS sites. "
         "Determines whether to create a new App Service Plan or reuse an existing one. "
-        "For MI on App Service, enforces PV4 SKU with IsCustomMode=true. "
-        "Optionally queries Azure for existing MI-enabled plans in the subscription. "
+        "For Managed Instance on App Service, enforces PV4 SKU with IsCustomMode=true. "
+        "Optionally queries Azure for existing Managed Instance-enabled plans in the subscription. "
         "Returns a deployment plan with site-to-plan mapping and validation results."
     ),
 )
@@ -45,7 +45,7 @@ async def plan_deployment(
         plan_name: Optional App Service Plan name. Auto-generated if empty.
         deployment_mode: "single_plan" (all sites on one plan) or "multi_plan" (one plan per site).
         target: "MI_AppService" or "AppService". Determines SKU and IsCustomMode.
-        check_existing_plans: If true, queries Azure for existing MI plans via PowerShell.
+        check_existing_plans: If true, queries Azure for existing Managed Instance plans via PowerShell.
     """
     if ctx:
         await ctx.report_progress(0, 100)
@@ -61,12 +61,12 @@ async def plan_deployment(
     is_mi = target == "MI_AppService"
     sku = "PremiumV4" if is_mi else "PremiumV2"
 
-    # Check for existing MI plans in Azure
+    # Check for existing Managed Instance plans in Azure
     existing_plans = []
     if check_existing_plans and is_mi:
         try:
             if ctx:
-                ctx.info("Querying Azure for existing MI-enabled App Service Plans...")
+                ctx.info("Querying Azure for existing Managed Instance-enabled App Service Plans...")
             result = run_powershell(
                 "Get-MIAppServicePlan.ps1",
                 {
@@ -121,20 +121,20 @@ async def plan_deployment(
     validations = []
     if is_mi:
         validations.append({
-            "check": "PV4 SKU required for MI",
+            "check": "PV4 SKU required for Managed Instance",
             "status": "pass",
             "detail": "All plans configured with PremiumV4 SKU.",
         })
         validations.append({
             "check": "IsCustomMode flag",
             "status": "pass",
-            "detail": "All MI plans have IsCustomMode=true.",
+            "detail": "All Managed Instance plans have IsCustomMode=true.",
         })
     if existing_plans:
         validations.append({
-            "check": "Existing MI plans found",
+            "check": "Existing Managed Instance plans found",
             "status": "info",
-            "detail": f"Found {len(existing_plans)} existing MI plan(s) in {resource_group}.",
+            "detail": f"Found {len(existing_plans)} existing Managed Instance plan(s) in {resource_group}.",
         })
 
     output = {
@@ -151,9 +151,9 @@ async def plan_deployment(
         "site_count": len(sites),
         "plan_count": len(plans),
         "note": (
-            "MI on App Service requires PV4 SKU with IsCustomMode=true. "
+            "Managed Instance on App Service requires PV4 SKU with IsCustomMode=true. "
             "This is the ONLY valid configuration."
-        ) if is_mi else "Regular App Service plan. No MI customization.",
+        ) if is_mi else "Regular App Service plan. No Managed Instance customization.",
     }
 
     if ctx:

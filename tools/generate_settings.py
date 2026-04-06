@@ -40,9 +40,9 @@ async def generate_migration_settings(
         resource_group: Azure resource group name.
         app_service_environment: Optional App Service Environment name.
         output_path: Optional custom path for MigrationSettings.json.
-        is_managed_instance: If true, sets PV4 SKU and IsCustomMode=true for MI.
+        is_managed_instance: If true, sets PV4 SKU and IsCustomMode=true for Managed Instance.
         plan_name: Optional App Service Plan name override.
-        install_script_path: Optional path to install.ps1 for MI deployments.
+        install_script_path: Optional path to install.ps1 for Managed Instance deployments.
     """
     if ctx:
         await ctx.report_progress(0, 100)
@@ -63,7 +63,7 @@ async def generate_migration_settings(
 
         run_powershell("Generate-MigrationSettings.ps1", params, timeout_seconds=120)
 
-        # Post-process for MI: inject PV4 tier, IsCustomMode, InstallScriptPath
+        # Post-process for Managed Instance: inject PV4 tier, IsCustomMode, InstallScriptPath
         if is_managed_instance:
             settings_file = output_path if output_path else os.path.join(
                 SCRIPTS_DIR, "MigrationSettings.json"

@@ -1,11 +1,11 @@
-"""generate_adapter_arm - Generate ARM template for MI adapter provisioning.
+"""generate_adapter_arm - Generate ARM template for Managed Instance adapter provisioning.
 
 Generates an ARM template to configure registry adapters and/or storage
 adapters (Azure Files mounts, local attached storage, custom storage over
 VNET) on a Managed Instance App Service Plan.
 
 Registry and storage dependencies should NOT be handled via install.ps1.
-Instead they use the MI platform's built-in adapter support, configured
+Instead they use the Managed Instance platform's built-in adapter support, configured
 either through the Azure Portal or by deploying this ARM template.
 """
 
@@ -17,7 +17,7 @@ from tools import server
 
 
 # ---------------------------------------------------------------------------
-# RBAC permissions required for MI adapter setup
+# RBAC permissions required for Managed Instance adapter setup
 # ---------------------------------------------------------------------------
 
 _RBAC_PERMISSIONS = {
@@ -28,7 +28,7 @@ _RBAC_PERMISSIONS = {
                 "role": "Key Vault Secrets User",
                 "role_id": "4633458b-17de-408a-b874-0445c86b69e6",
                 "scope": "Key Vault resource",
-                "reason": "Allows the MI instance to read secrets from Key Vault at runtime for registry adapters and storage mount credentials.",
+                "reason": "Allows the Managed Instance to read secrets from Key Vault at runtime for registry adapters and storage mount credentials.",
             },
         ],
     },
@@ -62,7 +62,7 @@ _RBAC_PERMISSIONS = {
                 "role": "Storage File Data SMB Share Contributor",
                 "role_id": "0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb",
                 "scope": "Storage Account or File Share",
-                "reason": "Allows read/write access to Azure File Shares mounted on the MI instance.",
+                "reason": "Allows read/write access to Azure File Shares mounted on the Managed Instance.",
             },
         ],
         "note": "The storage account access key or SAS token must be stored as a Key Vault secret and referenced via credentialsKeyVaultReference.",
@@ -83,7 +83,7 @@ _RBAC_PERMISSIONS = {
 
 
 # ---------------------------------------------------------------------------
-# ARM template skeleton based on the official MI ARM template schema
+# ARM template skeleton based on the official Managed Instance ARM template schema
 # (Microsoft.Web/serverfarms, apiVersion 2024-11-01)
 # ---------------------------------------------------------------------------
 
@@ -158,7 +158,7 @@ def _build_storage_mount(
           and Key Vault secret with storage account key.
         - Custom: Storage accessible over VNET (private endpoint). Requires source
           UNC path, Key Vault secret, and VNET integration on the plan.
-        - LocalStorage: Local attached SSD storage on the MI instance. No source
+        - LocalStorage: Local attached SSD storage on the Managed Instance. No source
           or credentials needed — just a drive letter.
 
     drive_letter: Single letter (e.g. "k", "l", "h"). Used as the root of
@@ -189,7 +189,7 @@ def _build_storage_mount(
 @server.tool(
     name="generate_adapter_arm_template",
     description=(
-        "Generate an ARM template for provisioning MI adapter resources on a Managed "
+        "Generate an ARM template for provisioning Managed Instance adapter resources on a Managed "
         "Instance App Service Plan. Adapters include:\n"
         "  - Registry Adapters: Map Windows Registry keys to Key Vault secrets so apps "
         "    reading HKLM/HKCU registry keys receive values from Key Vault at runtime.\n"
@@ -225,12 +225,12 @@ async def generate_adapter_arm_template(
     output_path: str = "",
     install_script_uri: str = "",
 ) -> str:
-    """Generate ARM template for MI adapters.
+    """Generate ARM template for Managed Instance adapters.
 
     Args:
-        plan_name: Name of the App Service Plan (MI-enabled, PV4).
+        plan_name: Name of the App Service Plan (Managed Instance-enabled, PV4).
         region: Azure region (e.g., "East US").
-        sku: SKU name (default P1V4). Must be PV4 tier for MI.
+        sku: SKU name (default P1V4). Must be PV4 tier for Managed Instance.
         adapter_features: Comma-separated adapter features to include:
             Registry, AzureFiles, LocalStorage, Custom.
             Used for auto-generating placeholder entries when specific configs aren't provided.

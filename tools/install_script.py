@@ -1,7 +1,7 @@
-"""generate_install_script - Generate install.ps1 for MI on App Service.
+"""generate_install_script - Generate install.ps1 for Managed Instance on App Service.
 
 Produces a PowerShell install script for OS-level feature enablement and
-configuration on MI instances. This script is ONLY for scenarios requiring:
+configuration on Managed Instance. This script is ONLY for scenarios requiring:
   - COM component registration / MSI installation
   - SMTP server configuration
   - MSMQ client configuration
@@ -22,12 +22,12 @@ import textwrap
 from tools import server
 
 
-# Script section templates based on MI example scripts
+# Script section templates based on Managed Instance example scripts
 _SCRIPT_HEADER = textwrap.dedent("""\
     #######################################################################
     # install.ps1 — Managed Instance on App Service installation script
     #
-    # This script runs during app startup on the MI instance.
+    # This script runs during app startup on the Managed Instance.
     # It installs Windows features and configures OS-level dependencies
     # required by the application.
     #
@@ -45,7 +45,7 @@ _SCRIPT_HEADER = textwrap.dedent("""\
         Write-Host $entry
     }
 
-    Write-Log "Starting MI installation script..."
+    Write-Log "Starting Managed Instance installation script..."
 """)
 
 _SMTP_SECTION = textwrap.dedent("""\
@@ -154,7 +154,7 @@ _SCRIPT_FOOTER = textwrap.dedent("""\
     # ---------------------------------------------------------------
     # Finalize
     # ---------------------------------------------------------------
-    Write-Log "MI installation script completed successfully."
+    Write-Log "Managed Instance installation script completed successfully."
 """)
 
 _FEATURE_SECTIONS = {
@@ -186,7 +186,7 @@ async def generate_install_script(
     config_assessment_json: str = "",
     source_assessment_json: str = "",
 ) -> str:
-    """Generate install.ps1 for MI on App Service.
+    """Generate install.ps1 for Managed Instance on App Service.
 
     Args:
         site_name: The site name (used for labeling and default output path).
@@ -270,7 +270,7 @@ async def generate_install_script(
         "note": (
             "Review the generated script and customize placeholder values "
             "(registry keys, queue names, relay hosts, installer paths). "
-            "The script will run during app startup on the MI instance."
+            "The script will run during app startup on the Managed Instance."
         ),
     }
 

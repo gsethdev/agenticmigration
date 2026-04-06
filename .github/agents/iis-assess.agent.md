@@ -18,7 +18,7 @@ You are the **IIS Assessment Specialist**. Your job is to produce a comprehensiv
    - **Mandatory** issues (must fix before migration)
    - **Optional** improvements (recommended but not blocking)
    - **Potential** concerns (investigate further)
-3. Highlight MI-relevant findings: registry access, COM dependencies, SMTP, MSMQ, file I/O, GAC assemblies
+3. Highlight Managed Instance-relevant findings: registry access, COM dependencies, SMTP, MSMQ, file I/O, GAC assemblies
 
 ## Output Format
 

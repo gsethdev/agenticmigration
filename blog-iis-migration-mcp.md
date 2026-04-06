@@ -10,7 +10,7 @@ Enterprises running ASP.NET Framework workloads on Windows Server with IIS face 
 
 Azure App Service has long been the lift-and-shift destination for these workloads. But what about applications that depend on **Windows registry keys**, **COM components**, **SMTP relay**, **MSMQ queues**, **local file system access**, or **custom fonts**? These OS-level dependencies have historically been migration blockers — forcing teams into expensive re-architecture or keeping them anchored to VMs.
 
-**Managed Instance (MI) on Azure App Service** changes this equation entirely. And the **IIS Migration MCP Server** makes migration guided, intelligent, and safe — with AI agents that know what to ask, what to check, and what to generate at every step.
+**Managed Instance on Azure App Service** changes this equation entirely. And the **IIS Migration MCP Server** makes migration guided, intelligent, and safe — with AI agents that know what to ask, what to check, and what to generate at every step.
 
 ---
 
@@ -25,9 +25,9 @@ Managed Instance on App Service is Azure's answer to applications that need **OS
 | **install.ps1 Startup Script** | Run PowerShell at instance startup to install Windows features (SMTP, MSMQ), register COM components, install MSI packages, deploy custom fonts |
 | **Custom Mode** | Full access to the Windows instance for configuration beyond standard PaaS guardrails |
 
-**The key constraint**: MI on App Service **requires PV4 SKU** with **IsCustomMode=true**. No other SKU combination supports it.
+**The key constraint**: Managed Instance on App Service **requires PV4 SKU** with **IsCustomMode=true**. No other SKU combination supports it.
 
-### Why MI Matters for Legacy Apps
+### Why Managed Instance Matters for Legacy Apps
 
 Consider a classic enterprise ASP.NET application that:
 - Reads license keys from `HKLM\SOFTWARE\MyApp` in the Windows Registry
@@ -36,7 +36,7 @@ Consider a classic enterprise ASP.NET application that:
 - Writes reports to `D:\Reports\` on a local drive
 - Uses a custom corporate font for PDF rendering
 
-With standard App Service, you'd need to rewrite every one of these dependencies. With MI on App Service, you can:
+With standard App Service, you'd need to rewrite every one of these dependencies. With Managed Instance on App Service, you can:
 - Map registry reads to Key Vault secrets via **Registry Adapters**
 - Mount Azure Files as `D:\` via **Storage Adapters**
 - Enable SMTP Server via **install.ps1**
@@ -71,11 +71,11 @@ Here's what a traditional migration looks like:
 
 1. Run readiness checks — get a wall of JSON with cryptic check IDs like `ContentSizeCheck`, `ConfigErrorCheck`, `GACCheck`
 2. Manually interpret 15+ readiness checks per site across dozens of sites
-3. Decide whether each site needs MI or standard App Service (how?)
-4. Figure out which dependencies need registry adapters vs. storage adapters vs. install.ps1 (the "MI provisioning split")
+3. Decide whether each site needs Managed Instance or standard App Service (how?)
+4. Figure out which dependencies need registry adapters vs. storage adapters vs. install.ps1 (the "Managed Instance provisioning split")
 5. Write the install.ps1 script by hand for each combination of OS features
 6. Author ARM templates for adapter configurations (Key Vault references, storage mount specs, RBAC assignments)
-7. Wire together `PackageResults.json` → `MigrationSettings.json` with correct MI fields (`Tier=PremiumV4`, `IsCustomMode=true`)
+7. Wire together `PackageResults.json` → `MigrationSettings.json` with correct Managed Instance fields (`Tier=PremiumV4`, `IsCustomMode=true`)
 8. Hope you didn't misconfigure anything before deploying to Azure
 
 Even experienced Azure engineers find this time-consuming, error-prone, and tedious — especially across a fleet of 20, 50, or 100+ IIS sites.
@@ -88,21 +88,21 @@ The IIS Migration MCP Server introduces an **AI orchestration layer** that trans
 |---------------------|------------------|
 | Read raw JSON output from scripts | AI summarizes readiness as tables with plain-English descriptions |
 | Memorize 15 check types and their severity | AI enriches each check with title, description, recommendation, and documentation links |
-| Manually decide MI vs App Service | `recommend_target` analyzes all signals and recommends with confidence + reasoning |
+| Manually decide Managed Instance vs App Service | `recommend_target` analyzes all signals and recommends with confidence + reasoning |
 | Write install.ps1 from scratch | `generate_install_script` builds it from detected features |
 | Author ARM templates manually | `generate_adapter_arm_template` generates full templates with RBAC guidance |
 | Wire JSON artifacts between phases by hand | Agents pass `readiness_results_path` → `package_results_path` → `migration_settings_path` automatically |
-| Pray you set PV4 + IsCustomMode correctly | **Enforced automatically** — every tool validates MI constraints |
+| Pray you set PV4 + IsCustomMode correctly | **Enforced automatically** — every tool validates Managed Instance constraints |
 | Deploy and find out what broke | `confirm_migration` presents a full cost/resource summary before touching Azure |
 
-**The core value proposition: the AI knows the MI provisioning split.** It knows that registry access needs an ARM template with Key Vault-backed adapters, while SMTP needs an `install.ps1` section enabling the Windows SMTP Server feature. You don't need to know this. The system detects it from your IIS configuration and AppCat analysis, then generates exactly the right artifacts.
+**The core value proposition: the AI knows the Managed Instance provisioning split.** It knows that registry access needs an ARM template with Key Vault-backed adapters, while SMTP needs an `install.ps1` section enabling the Windows SMTP Server feature. You don't need to know this. The system detects it from your IIS configuration and AppCat analysis, then generates exactly the right artifacts.
 
 ### Human-in-the-Loop Safety
 
 Agentic doesn't mean autonomous. The system has explicit gates:
 
 - **Phase 1 → Phase 2**: "Do you want to assess these sites, or skip to packaging?"
-- **Phase 3**: "Here's my recommendation — MI for Site A (COM + Registry), standard for Site B. Agree?"
+- **Phase 3**: "Here's my recommendation — Managed Instance for Site A (COM + Registry), standard for Site B. Agree?"
 - **Phase 4**: "Review MigrationSettings.json before proceeding"
 - **Phase 5**: "This will create billable Azure resources. Type 'yes' to confirm"
 
@@ -213,7 +213,7 @@ This enrichment comes from `WebAppCheckResources.resx`, an XML resource file tha
 **Output**: Overall status, enriched failed/warning checks, framework version, pipeline mode, binding details.
 
 #### 4. `assess_source_code`
-**Purpose**: Analyze an AppCat JSON report to identify MI-relevant source code dependencies.
+**Purpose**: Analyze an AppCat JSON report to identify Managed Instance-relevant source code dependencies.
 
 If your application has source code and you've run `appcat analyze` against it, this tool parses the results and maps findings to migration actions:
 
@@ -239,7 +239,7 @@ If your application has source code and you've run `appcat analyze` against it, 
 This is a routing tool that considers:
 - **Source code available?** → Recommend the App Modernization MCP server for code-level changes
 - **No source code?** → Recommend this IIS Migration MCP (lift-and-shift)
-- **OS customization needed?** → Highlight MI on App Service as the target
+- **OS customization needed?** → Highlight Managed Instance on App Service as the target
 
 #### 6. `recommend_target`
 **Purpose**: Recommend the Azure deployment target for each site based on all assessment data.
@@ -255,16 +255,16 @@ This is the intelligence center of the system. It analyzes config assessments an
 Each recommendation comes with:
 - **Confidence**: `high` or `medium`
 - **Reasoning**: Full explanation of why this target was chosen
-- **MI reasons**: Specific dependencies that require MI
+- **Managed Instance reasons**: Specific dependencies that require Managed Instance
 - **Blockers**: Issues that prevent migration entirely
 - **install_script_features**: What the install.ps1 needs to enable
 - **adapter_features**: What the ARM template needs to configure
 - **Provisioning guidance**: Step-by-step instructions for what to do next
 
 #### 7. `generate_install_script`
-**Purpose**: Generate an `install.ps1` PowerShell script for OS-level feature enablement on MI.
+**Purpose**: Generate an `install.ps1` PowerShell script for OS-level feature enablement on Managed Instance.
 
-This handles the **OS-level** side of the MI provisioning split. It generates a startup script that includes sections for:
+This handles the **OS-level** side of the Managed Instance provisioning split. It generates a startup script that includes sections for:
 
 | Feature | What the Script Does |
 |---------|---------------------|
@@ -277,20 +277,20 @@ This handles the **OS-level** side of the MI provisioning split. It generates a 
 The script can auto-detect needed features from config and source assessments, or you can specify them manually.
 
 #### 8. `generate_adapter_arm_template`
-**Purpose**: Generate an ARM template for MI registry and storage adapters.
+**Purpose**: Generate an ARM template for Managed Instance registry and storage adapters.
 
-This handles the **platform-level** side of the MI provisioning split. It generates a deployable ARM template that configures:
+This handles the **platform-level** side of the Managed Instance provisioning split. It generates a deployable ARM template that configures:
 
 **Registry Adapters** (Key Vault-backed):
 - Map Windows Registry paths (e.g., `HKLM\SOFTWARE\MyApp\LicenseKey`) to Key Vault secrets
-- Your application reads the registry as before; MI redirects the read to Key Vault transparently
+- Your application reads the registry as before; Managed Instance redirects the read to Key Vault transparently
 
 **Storage Adapters** (three types):
 | Type | Description | Credentials |
 |------|-------------|-------------|
 | **AzureFiles** | Mount Azure Files SMB share as a drive letter | Storage account key in Key Vault |
 | **Custom** | Mount storage over private endpoint via VNET | Requires VNET integration |
-| **LocalStorage** | Allocate local SSD on the MI instance as a drive letter | None needed |
+| **LocalStorage** | Allocate local SSD on the Managed Instance as a drive letter | None needed |
 
 The template also includes:
 - Managed Identity configuration
@@ -306,9 +306,9 @@ The template also includes:
 
 Collects your Azure details (subscription, resource group, region) and creates a validated deployment plan:
 - Assigns sites to App Service Plans
-- **Enforces PV4 + IsCustomMode=true for MI** — won't let you accidentally use the wrong SKU
+- **Enforces PV4 + IsCustomMode=true for Managed Instance** — won't let you accidentally use the wrong SKU
 - Supports `single_plan` (all sites on one plan) or `multi_plan` (separate plans)
-- Optionally queries Azure for existing MI plans you can reuse
+- Optionally queries Azure for existing Managed Instance plans you can reuse
 
 #### 10. `package_site`
 **Purpose**: Package IIS site content into ZIP files for deployment.
@@ -323,7 +323,7 @@ Calls `Get-SitePackage.ps1` to:
 #### 11. `generate_migration_settings`
 **Purpose**: Create the `MigrationSettings.json` deployment configuration.
 
-This is the final configuration artifact. It calls `Generate-MigrationSettings.ps1` and then post-processes the output to inject MI-specific fields:
+This is the final configuration artifact. It calls `Generate-MigrationSettings.ps1` and then post-processes the output to inject Managed Instance-specific fields:
 
 ```json
 {
@@ -352,7 +352,7 @@ This is the final configuration artifact. It calls `Generate-MigrationSettings.p
 Before touching Azure, this tool displays:
 - Total plans and sites to be created
 - SKU and pricing tier per plan
-- Whether MI is configured
+- Whether Managed Instance is configured
 - Cost warning for PV4 pricing
 - Resource group, region, and subscription details
 
@@ -364,7 +364,7 @@ Before touching Azure, this tool displays:
 Calls `Invoke-SiteMigration.ps1`, which:
 1. Sets Azure subscription context
 2. Creates/validates resource groups
-3. Creates App Service Plans (PV4 with IsCustomMode for MI)
+3. Creates App Service Plans (PV4 with IsCustomMode for Managed Instance)
 4. Creates Web Apps
 5. Configures .NET version, 32-bit mode, pipeline mode from the original IIS settings
 6. Sets up virtual directories and applications
@@ -385,7 +385,7 @@ The root agent that guides the entire migration. It:
 - Tracks progress across all 5 phases using a todo list
 - Delegates work to specialist subagents
 - Gates between phases — asks before transitioning
-- Enforces the MI constraint (PV4 + IsCustomMode) at every decision point
+- Enforces the Managed Instance constraint (PV4 + IsCustomMode) at every decision point
 - Never skips the Phase 5 confirmation gate
 
 **Usage**: Open Copilot Chat and type `@iis-migrate I want to migrate my IIS applications to Azure`
@@ -396,7 +396,7 @@ Handles Phase 1. Runs `discover_iis_sites`, presents a summary table of all site
 
 ### `iis-assess` — Assessment Specialist
 
-Handles Phase 2. Runs `assess_site_readiness` for every site, and `assess_source_code` when AppCat results are available. Merges findings, highlights MI-relevant issues, and produces the adapter/install features lists that drive Phase 3.
+Handles Phase 2. Runs `assess_site_readiness` for every site, and `assess_source_code` when AppCat results are available. Merges findings, highlights Managed Instance-relevant issues, and produces the adapter/install features lists that drive Phase 3.
 
 ### `iis-recommend` — Recommendation Specialist
 
@@ -404,7 +404,7 @@ Handles Phase 3. Runs `recommend_target` for each site, then conditionally gener
 
 ### `iis-deploy-plan` — Deployment Planning Specialist
 
-Handles Phase 4. Collects Azure details, runs `plan_deployment`, `package_site`, and `generate_migration_settings`. Validates MI configuration, allows review and editing of MigrationSettings.json. **Does not execute migration.**
+Handles Phase 4. Collects Azure details, runs `plan_deployment`, `package_site`, and `generate_migration_settings`. Validates Managed Instance configuration, allows review and editing of MigrationSettings.json. **Does not execute migration.**
 
 ### `iis-execute` — Execution Specialist
 
@@ -412,13 +412,13 @@ Handles Phase 5 only. Runs `confirm_migration` to present the final summary, the
 
 ---
 
-## The MI Provisioning Split: A Critical Concept
+## The Managed Instance Provisioning Split: A Critical Concept
 
-One of the most important ideas MI introduces is the **provisioning split** — the division of OS dependencies into two categories that are configured through different mechanisms:
+One of the most important ideas Managed Instance introduces is the **provisioning split** — the division of OS dependencies into two categories that are configured through different mechanisms:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                  MI PROVISIONING SPLIT                        │
+│            MANAGED INSTANCE PROVISIONING SPLIT                │
 ├─────────────────────────────┬────────────────────────────────┤
 │  ARM Template               │  install.ps1                   │
 │  (Platform-Level)           │  (OS-Level)                    │
@@ -450,7 +450,7 @@ You don't need to remember which goes where — the system decides and generates
 
 ---
 
-## End-to-End Walkthrough: From Discovery to Running on MI
+## End-to-End Walkthrough: From Discovery to Running on Managed Instance
 
 Here's what a complete migration conversation looks like:
 
@@ -574,7 +574,7 @@ The MCP server classifies errors into actionable categories:
 
 ## Conclusion
 
-The IIS Migration MCP Server turns what used to be a multi-week, expert-driven project into a guided conversation. It combines Microsoft's battle-tested migration PowerShell scripts with AI orchestration that understands the nuances of MI on App Service — the provisioning split, the PV4 constraint, the adapter configurations, and the OS-level customizations.
+The IIS Migration MCP Server turns what used to be a multi-week, expert-driven project into a guided conversation. It combines Microsoft's battle-tested migration PowerShell scripts with AI orchestration that understands the nuances of Managed Instance on App Service — the provisioning split, the PV4 constraint, the adapter configurations, and the OS-level customizations.
 
 Whether you're migrating 1 site or 100, agentic migration reduces risk, eliminates guesswork, and produces auditable artifacts at every step. The human stays in control; the AI handles the complexity.
 

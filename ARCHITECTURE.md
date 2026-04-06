@@ -2,7 +2,7 @@
 
 A comprehensive guide to the IIS-to-Azure App Service migration system.
 This document covers every component, the end-to-end pipeline, agent orchestration,
-data flow, and the critical MI (Managed Instance) constraints.
+data flow, and the critical Managed Instance on App Service constraints.
 
 ---
 
@@ -14,9 +14,9 @@ data flow, and the critical MI (Managed Instance) constraints.
 3. [6-Phase Pipeline Flow](#3-6-phase-pipeline-flow)
 4. [Agent Orchestration](#4-agent-orchestration)
 5. [Data Flow & Artifacts](#5-data-flow--artifacts)
-6. [MI Provisioning Split](#6-mi-provisioning-split)
+6. [Managed Instance Provisioning Split](#6-managed-instance-provisioning-split)
 7. [Prerequisites & Setup](#7-prerequisites--setup)
-8. [MI Constraints & Rules](#8-mi-constraints--rules)
+8. [Managed Instance Constraints & Rules](#8-managed-instance-constraints--rules)
 
 ---
 
@@ -169,12 +169,12 @@ external CLIs into a unified, agent-driven migration workflow.
 | 1 | Discovery | `discover_iis_sites` | PS | Scan local IIS, run readiness checks, save ReadinessResults.json | IISDiscovery.ps1 |
 | 2 | Discovery | `choose_assessment_mode` | Python | Route sites to config-only, config+source, or skip-to-packaging | — |
 | 3 | Assessment | `assess_site_readiness` | Python | Detailed per-site readiness from ReadinessResults.json with remediation links | — |
-| 4 | Assessment | `assess_source_code` | Python | Parse AppCat JSON report for MI-relevant findings; splits adapter vs install features | — |
+| 4 | Assessment | `assess_source_code` | Python | Parse AppCat JSON report for Managed Instance-relevant findings; splits adapter vs install features | — |
 | 5 | Recommendation | `suggest_migration_approach` | Python | Route to IIS Migration MCP (binaries) vs App Modernization MCP (source code) | — |
-| 6 | Recommendation | `recommend_target` | Python | MI on App Service (PV4) vs standard App Service vs Container Apps | — |
+| 6 | Recommendation | `recommend_target` | Python | Managed Instance on App Service (PV4) vs standard App Service vs Container Apps | — |
 | 7 | Recommendation | `generate_install_script` | Python | Create install.ps1 for OS-level features (SMTP, MSMQ, COM, fonts, Crystal Reports) | — |
 | 8 | Recommendation | `generate_adapter_arm_template` | Python | ARM template for registry adapters (→ Key Vault) and storage adapters | — |
-| 9 | Deployment | `plan_deployment` | Python | Plan App Service Plans; enforce PV4 + IsCustomMode for MI; query existing plans | Get-MIAppServicePlan.ps1 |
+| 9 | Deployment | `plan_deployment` | Python | Plan App Service Plans; enforce PV4 + IsCustomMode for Managed Instance; query existing plans | Get-MIAppServicePlan.ps1 |
 | 10 | Deployment | `package_site` | PS | ZIP site content from IIS physical path; optionally inject install.ps1 | Get-SitePackage.ps1 |
 | 11 | Deployment | `generate_migration_settings` | PS | Build MigrationSettings.json from PackageResults.json | Generate-MigrationSettings.ps1 |
 | 12 | Execution | `confirm_migration` | Python | Present human-readable summary; require explicit confirmation before deploy | — |
@@ -230,7 +230,8 @@ external CLIs into a unified, agent-driven migration workflow.
  │        │             │    │                       │    │         │                    │
  │        ▼             │    │ assess_source_code    │    │ recommend_target             │
  │ choose_assessment_   │    │ (needs AppCat JSON)   │    │    │              │          │
- │   mode               │    │                       │    │    ▼ (if MI)     ▼ (if std) │
+ │   mode               │    │                       │    │    ▼ (if Managed Instance)  │
+ │                      │    │                       │    │                 ▼ (if std) │
  └────────┬─────────────┘    └───────────┬───────────┘    │ generate_     skip to       │
           │                              │                │  install_     Phase 4        │
           │  ReadinessResults.json       │                │  script                      │
@@ -267,7 +268,7 @@ external CLIs into a unified, agent-driven migration workflow.
 |-------|------|----------------------|
 | 1. Discovery | Admin + IIS required | `ReadinessResults.json` |
 | 2. Assessment | AppCat CLI for source mode | Enriched assessment per site |
-| 3. Recommendation | Source assessment for MI features | `install.ps1`, `mi-adapters-template.json` |
+| 3. Recommendation | Source assessment for Managed Instance features | `install.ps1`, `mi-adapters-template.json` |
 | 4. Deployment Planning | Azure login for existing plan query | `PackageResults.json`, `MigrationSettings.json` |
 | 5. Execution | Explicit human confirmation | `MigrationResults.json` |
 
@@ -342,7 +343,7 @@ prevents agents from calling tools outside their responsibility.
      │  ── Phase 3: Recommendation ─────────────────│──────────────────────────│───────────────│──
      │                     │                        │                          │               │
      │                     │──recommend_target──>   │                          │               │
-     │                     │   (MI or Standard?)    │                          │               │
+     │                     │   (Managed Instance or Standard?)                 │               │
      │                     │──install.ps1──────────>│                          │               │
      │                     │──mi-adapters-template─>│                          │               │
      │                     │                        │                          │               │
@@ -390,7 +391,7 @@ All artifacts are written to `%TEMP%\iis-migration\`:
 | PackageResults.json | `%TEMP%\iis-migration\PackageResults.json` | UTF-16 LE |
 | MigrationSettings.json | `%TEMP%\iis-migration\MigrationSettings.json` | UTF-8 |
 | Site ZIP packages | `%TEMP%\iis-migration\PackagedSites\<SiteName>.zip` | Binary |
-| MI ARM template | `%TEMP%\iis-migration\<plan-name>\mi-adapters-template.json` | UTF-8 |
+| Managed Instance ARM template | `%TEMP%\iis-migration\<plan-name>\mi-adapters-template.json` | UTF-8 |
 | Install scripts | `%TEMP%\iis-migration\<SiteName>\install.ps1` | UTF-8 |
 
 > **Encoding note:** PowerShell 5.1 outputs UTF-16 LE with BOM (`FF FE`).
@@ -398,7 +399,7 @@ All artifacts are written to `%TEMP%\iis-migration\`:
 
 ---
 
-## 6. MI Provisioning Split
+## 6. Managed Instance Provisioning Split
 
 Managed Instance on App Service has two distinct dependency tracks.
 The system separates them because they have different provisioning
@@ -417,7 +418,7 @@ uses OS-level installation during site startup.
               ▼                                           ▼
 ┌──────────────────────────────────┐    ┌──────────────────────────────────┐
 │   ADAPTER TRACK (ARM Template)   │    │   INSTALL SCRIPT TRACK (.ps1)    │
-│   Platform-level, no app changes │    │   OS-level, runs at MI startup   │
+│   Platform-level, no app changes │    │   OS-level, runs at Managed Instance startup │
 │                                  │    │                                  │
 │  ┌────────────────────────────┐  │    │  ┌────────────────────────────┐  │
 │  │ Registry Adapters          │  │    │  │ SMTP Server               │  │
@@ -471,7 +472,7 @@ uses OS-level installation during site startup.
 ### Why Two Tracks?
 
 - **Adapters** are Azure platform features configured via ARM API (`Microsoft.Web/serverfarms` properties). They map local resources (registry keys, file paths) to cloud equivalents (Key Vault secrets, Azure File shares) without modifying the application.
-- **Install scripts** run during MI site startup to install Windows components that have no platform adapter equivalent. They execute `Install-WindowsFeature` and similar OS-level commands inside the MI sandbox.
+- **Install scripts** run during Managed Instance site startup to install Windows components that have no platform adapter equivalent. They execute `Install-WindowsFeature` and similar OS-level commands inside the Managed Instance environment.
 
 ---
 
@@ -510,7 +511,7 @@ Add to `.vscode/mcp.json` in your workspace:
         "iis-migration": {
             "command": "python",
             "args": ["server.py"],
-            "cwd": "G:\\My Drive\\AILearning\\Migration"
+            "cwd": "${workspaceFolder}"
         }
     }
 }
@@ -547,7 +548,7 @@ appcat analyze "path\to\project.csproj" `
 
 ---
 
-## 8. MI Constraints & Rules
+## 8. Managed Instance Constraints & Rules
 
 These constraints are the #1 source of deployment errors.
 Every component in the system enforces them.
@@ -558,18 +559,18 @@ Every component in the system enforces them.
 |-----------|-------|-------------|
 | App Service Plan SKU | **PV4 only** | `plan_deployment`, `generate_adapter_arm_template` |
 | IsCustomMode | **true** | `plan_deployment`, ARM template |
-| Custom container | Not supported | Site runs natively in MI sandbox |
+| Custom container | Not supported | Site runs natively in Managed Instance environment |
 
 ### RBAC Roles Required
 
 | Role | Scope | Assigned To | Purpose |
 |------|-------|-------------|---------|
 | Contributor | Resource Group | Deployer identity | Create App Service Plan + Apps |
-| Managed Identity Operator | MI User-Assigned Identity | Deployer identity | Assign MI identity to plan |
+| Managed Identity Operator | Managed Instance User-Assigned Identity | Deployer identity | Assign Managed Instance identity to plan |
 | Key Vault Administrator | Key Vault | Deployer identity | Create KV secrets for registry adapters |
-| Key Vault Secrets User | Key Vault | MI plan identity | Read registry adapter values at runtime |
-| Storage File Data SMB Share Contributor | Storage Account | MI plan identity | Mount Azure File shares |
-| Network Contributor | VNET/Subnet | MI plan identity | Custom (private endpoint) storage mounts |
+| Key Vault Secrets User | Key Vault | Managed Instance plan identity | Read registry adapter values at runtime |
+| Storage File Data SMB Share Contributor | Storage Account | Managed Instance plan identity | Mount Azure File shares |
+| Network Contributor | VNET/Subnet | Managed Instance plan identity | Custom (private endpoint) storage mounts |
 
 ### Adapter vs Install Script Decision Matrix
 
@@ -581,9 +582,9 @@ Does the feature have a platform adapter?
   │     • Deploy via: az deployment group create / Azure Portal
   │
   └── NO (SMTP, MSMQ, COM, Fonts, Crystal) → install.ps1 (generate_install_script)
-        • Windows features installed at MI startup
+        • Windows features installed at Managed Instance startup
         • Injected into site ZIP during package_site
-        • Runs inside MI sandbox with limited permissions
+        • Runs inside Managed Instance environment with limited permissions
 ```
 
 ### Storage Mount Types
