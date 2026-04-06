@@ -36,7 +36,7 @@ import tools.install_script
 import tools.generate_adapter_arm
 import tools.plan_deployment
 import tools.confirm_migration
-import tools.suggest
+import tools.configure
 
 
 def main() -> None:

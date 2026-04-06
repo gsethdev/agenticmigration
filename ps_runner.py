@@ -6,11 +6,35 @@ and return their output as parsed JSON or structured error information.
 
 import json
 import os
+import re
 import subprocess
+import tempfile
+import zipfile
 from dataclasses import dataclass
+from urllib.request import urlopen
 
 SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
 POWERSHELL_EXE = "powershell.exe"
+
+SCRIPTS_DOWNLOAD_URL = (
+    "https://appmigration.microsoft.com/api/download/psscripts/"
+    "AppServiceMigrationScripts.zip"
+)
+
+# Mutable scripts directory — set by configure_scripts_path.
+_custom_scripts_dir: str | None = None
+
+# PowerShell metacharacters that must not appear in parameter values.
+_PS_DANGEROUS_CHARS = re.compile(r"[;|`$\(\){}<>]")
+
+# Scripts expected by the migration tools.
+_REQUIRED_SCRIPTS = [
+    "Get-SiteReadiness.ps1",
+    "Get-SitePackage.ps1",
+    "Generate-MigrationSettings.ps1",
+    "Invoke-SiteMigration.ps1",
+    "MigrationHelperFunctions.psm1",
+]
 
 
 @dataclass
@@ -55,6 +79,138 @@ def _decode_ps_output(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _sanitize_param_value(key: str, value: str) -> str:
+    """Reject parameter values containing PowerShell injection characters."""
+    if _PS_DANGEROUS_CHARS.search(value):
+        raise PsError(
+            "INVALID_PARAMETER",
+            f"Parameter '-{key}' contains disallowed characters: {value!r}",
+            "Values must not contain ; | ` $ ( ) {{ }} < > characters.",
+        )
+    return value
+
+
+def get_scripts_dir() -> str:
+    """Return the active scripts directory (custom or default)."""
+    return _custom_scripts_dir or SCRIPTS_DIR
+
+
+def validate_path(path: str, *, must_exist: bool = True, label: str = "path") -> str:
+    """Validate a user-supplied file path against traversal attacks.
+
+    Resolves symlinks and relative components, then checks the path is under
+    an allowed directory (temp, scripts, or the workspace).
+
+    Args:
+        path: The raw user-supplied path.
+        must_exist: If True, raise when the resolved path doesn't exist.
+        label: Human-readable name for error messages.
+
+    Returns:
+        The resolved, normalised absolute path.
+
+    Raises:
+        PsError: If the path is empty, escapes allowed directories, or
+                 (when must_exist is True) doesn't point to a real file.
+    """
+    if not path or not path.strip():
+        raise PsError("INVALID_PATH", f"{label} cannot be empty.")
+
+    resolved = os.path.realpath(path)
+
+    # Allowed roots: temp dir, the active scripts dir, workspace root
+    allowed_roots = [
+        os.path.realpath(tempfile.gettempdir()),
+        os.path.realpath(get_scripts_dir()),
+        os.path.realpath(os.path.dirname(os.path.abspath(__file__))),
+    ]
+    # Also allow the custom scripts dir if set
+    if _custom_scripts_dir:
+        allowed_roots.append(os.path.realpath(_custom_scripts_dir))
+
+    if not any(resolved.lower().startswith(root.lower()) for root in allowed_roots):
+        raise PsError(
+            "PATH_TRAVERSAL",
+            f"{label} resolves outside allowed directories: {resolved}",
+            f"Allowed roots: {allowed_roots}",
+        )
+
+    if must_exist and not os.path.exists(resolved):
+        raise PsError("OUTPUT_NOT_FOUND", f"{label} not found: {resolved}")
+
+    return resolved
+
+
+def set_scripts_dir(folder_path: str) -> list[str]:
+    """Validate and set a custom migration scripts directory.
+
+    Returns a list of missing expected scripts (empty if all present).
+    """
+    global _custom_scripts_dir
+    resolved = os.path.realpath(folder_path)
+    if not os.path.isdir(resolved):
+        raise PsError(
+            "SCRIPT_NOT_FOUND",
+            f"Scripts folder not found: {folder_path}",
+            f"Resolved to: {resolved}",
+        )
+    _custom_scripts_dir = resolved
+    missing = [s for s in _REQUIRED_SCRIPTS if not os.path.isfile(os.path.join(resolved, s))]
+    return missing
+
+
+def scripts_status() -> dict:
+    """Return the current scripts configuration status."""
+    sdir = get_scripts_dir()
+    present = [s for s in _REQUIRED_SCRIPTS if os.path.isfile(os.path.join(sdir, s))]
+    missing = [s for s in _REQUIRED_SCRIPTS if s not in present]
+    return {
+        "configured": _custom_scripts_dir is not None,
+        "scripts_path": sdir,
+        "required_scripts": _REQUIRED_SCRIPTS,
+        "present": present,
+        "missing": missing,
+        "ready": len(missing) == 0,
+        "download_url": SCRIPTS_DOWNLOAD_URL,
+    }
+
+
+def download_and_extract_scripts(target_directory: str = "") -> dict:
+    """Download the migration scripts ZIP and extract to *target_directory*."""
+    if not target_directory:
+        target_directory = os.path.join(tempfile.gettempdir(), "iis-migration-scripts")
+    os.makedirs(target_directory, exist_ok=True)
+
+    zip_path = os.path.join(target_directory, "AppServiceMigrationScripts.zip")
+    try:
+        with urlopen(SCRIPTS_DOWNLOAD_URL) as resp, open(zip_path, "wb") as out:  # noqa: S310
+            out.write(resp.read())
+    except Exception as exc:
+        raise PsError(
+            "DOWNLOAD_FAILED",
+            f"Failed to download migration scripts: {exc}",
+            SCRIPTS_DOWNLOAD_URL,
+        )
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(target_directory)
+    except Exception as exc:
+        raise PsError(
+            "EXTRACT_FAILED",
+            f"Failed to extract migration scripts: {exc}",
+            zip_path,
+        )
+
+    missing = set_scripts_dir(target_directory)
+    return {
+        "downloaded": True,
+        "extracted_to": target_directory,
+        "missing_scripts": missing,
+        "ready": len(missing) == 0,
+    }
+
+
 def run_powershell(
     script_name: str,
     params: dict[str, str | bool | None] | None = None,
@@ -74,7 +230,7 @@ def run_powershell(
     Raises:
         PsError: On script failure with a categorised error type.
     """
-    script_path = os.path.join(SCRIPTS_DIR, script_name)
+    script_path = os.path.join(get_scripts_dir(), script_name)
     if not os.path.isfile(script_path):
         raise PsError(
             "SCRIPT_NOT_FOUND",
@@ -87,7 +243,7 @@ def run_powershell(
         "-NoProfile",
         "-NonInteractive",
         "-ExecutionPolicy",
-        "Bypass",
+        "Bypass",   # Required: migration scripts are unsigned
         "-File",
         script_path,
     ]
@@ -99,6 +255,7 @@ def run_powershell(
             if value:
                 args.append(f"-{key}")
         else:
+            _sanitize_param_value(key, str(value))
             args.append(f"-{key}")
             args.append(str(value))
 
@@ -107,7 +264,7 @@ def run_powershell(
             args,
             capture_output=True,
             timeout=timeout_seconds,
-            cwd=SCRIPTS_DIR,
+            cwd=get_scripts_dir(),
         )
     except FileNotFoundError:
         raise PsError(
@@ -160,10 +317,9 @@ def run_powershell(
 
 def read_json_file(path: str) -> dict | list:
     """Read and parse a JSON file produced by a PowerShell script."""
-    if not os.path.isfile(path):
-        raise PsError("OUTPUT_NOT_FOUND", f"Expected output file not found: {path}")
+    validated = validate_path(path, must_exist=True, label="JSON file")
     # PowerShell 5.1 may write JSON in UTF-16 LE; detect BOM and decode accordingly.
-    with open(path, "rb") as f:
+    with open(validated, "rb") as f:
         raw = f.read()
     if raw[:2] == b"\xff\xfe":
         text = raw.decode("utf-16-le").lstrip("\ufeff")

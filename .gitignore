@@ -28,6 +28,9 @@ sr1.json
 scripts/0
 *.tmp
 
+# Config with potential telemetry keys
+scripts/ScriptConfig.json
+
 # OS files
 Thumbs.db
 .DS_Store
